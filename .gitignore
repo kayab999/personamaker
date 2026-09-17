@@ -27,6 +27,10 @@ Thumbs.db
 *.log
 logs/
 
+# Python bytecode (mock smoke runs)
+__pycache__/
+*.pyc
+
 # Audit harness generated files (never commit captures/logs)
 harness/mock_requests.jsonl
 harness/mock_state.json

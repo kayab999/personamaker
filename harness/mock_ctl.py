@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Flip mock_llama_server.py modes at runtime (app-managed child stays alive).
-usage: mock_ctl.py <port> <normal|malformed|empty|whitespace|nullcontent|500|503|
+usage: mock_ctl.py <port> <normal|malformed|empty|whitespace|nullcontent|500|503|ctx400|
  drip|hang|reset|length|big|redirect|relaylog|empty_choices|wrongshape|ready|notready|show>"""
 import json
 import sys

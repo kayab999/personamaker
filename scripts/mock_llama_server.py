@@ -222,6 +222,13 @@ class H(BaseHTTPRequestHandler):
             self._send(503, b'{"error":{"message":"mock unavailable","type":"server_error"}}')
             return
 
+        if m == "ctx400":
+            self._send(400, json.dumps({"error": {"code": 400,
+                "message": "the request exceeds the available context size: 72089 tokens > 8192 "
+                           "(try increasing the context size or enabling context shift)",
+                "type": "invalid_request_error"}}).encode())
+            return
+
         if m == "malformed":
             self._send(200, b'{"choices": not json {{{', close=True)
             return
@@ -315,6 +322,7 @@ def main():
             "nullcontent",
             "500",
             "503",
+            "ctx400",
             "drip",
             "hang",
             "reset",

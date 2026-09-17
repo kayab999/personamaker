@@ -41,6 +41,15 @@ Start server in-app → mock_ctl.py <port> show must answer.
 | notready→ready  | readiness gating; measure the 15s timeout → F-010 evidence    | —    |
 After each row: mock_ctl.py <port> normal.
 
+## 4c. F-001 live repro (no GPU)
+seed_long_history.py (§2.1 → harness/seed_long_history.py) -> ndjson_check clean ->
+Settings model=L3.2-Rogue, server=harness/fake_llama_server.sh -> select character,
+open 'audit-f001-seed', send 1 message ->
+  a) validate_captures --ctx 8192: BUDGET(exact) FAIL with prompt_tokens ≈ 72k  [the deliverable]
+  b) mock_ctl ctx400 -> send again -> error surfaced? no append? toast actionable?
+  c) mock_ctl normal -> restore
+Note: goldens (§7) are unaffected by model choice — short conversations never hit the walk bound.
+
 ## 5. T-5 stdout probe
 Launch app with MOCK_STDOUT_FLOOD=1 (env inherits to child). Chat 2-3 min.
 Server stall / health failure after ~64KB of stdout = F-003 confirmed behaviorally.

@@ -197,7 +197,7 @@ fn read_process_memory() -> (u64, u64) {
     if let Some(process) = sys.process(Pid::from_u32(std::process::id())) {
         let rss = process.memory() / 1024; // bytes → KB
         let vms = process.virtual_memory() / 1024;
-        return (rss as u64, vms as u64);
+        return (rss, vms);
     }
     (0, 0)
 }

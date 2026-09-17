@@ -12,7 +12,8 @@ over it.**
 **CTX-2 — VERIFIED, defect (merged with CTX-1 as F-001).** Budget =
 `max(1024, gguf_ctx × 0.55)`, fallback 4500 (`src/commands.rs:597-604`) —
 derived from a *different source* than the server's actual ctx. Crossover at gguf
-ctx ≥ 14,897 → any llama/qwen2/qwen3 model ≥ 32k packs up to 18k–70k history
+ctx ≥ 14,895 (= ⌈8192/0.55⌉; float truncation in code shifts the observable edge
+to 14,897 — pinned by `witness_ctx12_exact_crossover`) → any llama/qwen2/qwen3 model ≥ 32k packs up to 18k–70k history
 tokens against an 8192 server → llama-server 400 (or silent truncation on some
 builds) on every send past a history depth. Docs claim ×0.82 / 8192
 (`docs/handbook/ARCHITECTURE_AND_STATUS.md:194`) — both stale; no 0.82 exists

@@ -26,14 +26,14 @@ pub fn retrieve_relevant_chunks(
     let mut scored_chunks: Vec<(&crate::storage::KnowledgeChunk, f32)> = all_chunks
         .iter()
         .filter_map(|chunk| {
-            chunk.embedding.as_ref().map(|emb| {
+            chunk.embedding.as_ref().and_then(|emb| {
                 let a = emb.as_slice();
                 let b = query_embedding.as_slice();
                 if a.len() != b.len() {
                     return None;
                 }
                 Some((chunk, cosine_similarity(a, b)))
-            }).flatten()
+            })
         })
         .collect();
 

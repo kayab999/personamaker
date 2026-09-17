@@ -397,7 +397,7 @@ pub fn load_all_characters(app: &AppHandle) -> Result<Vec<StoredCharacter>, Stri
     }
 
     // Sort by creation date (newest first)
-    characters.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    characters.sort_by_key(|a| std::cmp::Reverse(a.created_at));
 
     Ok(characters)
 }
