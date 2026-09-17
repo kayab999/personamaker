@@ -75,5 +75,14 @@ already holds the mechanism: asserts flip to `budget(file) ≤ server_ctx`.
 
 ## Session input Phase 3 needs
 
-One value from the behavioral session: **the max_tokens used in S1/S2** —
-calibrates the reserves margin against a real user setting, not the assumed 2048.
+Runbook pins S1 = 2048 and S2 = 50000→32768; the session only *confirms* what the
+app actually sent (`--expect-sampling` line + F-013 note). Pending inputs beyond
+the evidence itself: effectively zero.
+
+## Post-fix UX consequence (for Phase-3 implementation + release notes)
+
+Honest reserves on ctx 8192 + rich persona (~1200) + RAG (~1500) + max_tokens
+2048 leave **~3k history tokens**. Not a bug — the truth of an 8k ctx — but users
+currently "enjoying" the broken 72k budget will read it as a memory regression.
+Mitigation: the pill showing the real history budget (already riding in §a); one
+release-notes line to close the expectation.

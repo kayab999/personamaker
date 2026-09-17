@@ -1,6 +1,15 @@
 # Behavioral session results — no-GPU slice §4–8
-Executor: ___  Date: ___  Tree: audit-baseline-0.9.0-rc.1 + <commits>  App: dev | .deb
-Mock: app-managed via harness/fake_llama_server.sh — APP port (mock_ctl target): ___
+
+## Provenance (F-022 gate — REQUIRED: no full header → no consolidation)
+- Operator (human): ___
+- Session start/end: ___
+- Tree: commit ___ (post-6965905), dirty files: ___
+- App mode: dev | binary ; LOCALPERSONA_CAPTURE_PROMPTS=___
+- Settings model (§4c requires Rogue): ___
+- App port (mock_ctl target): ___
+- Closing line counts: captures_golden ___ · EVIDENCE_F001 ___ · mock_requests ___
+- Rows run: ___ / skipped + why: ___
+- Mock: app-managed via harness/fake_llama_server.sh
 
 ## §4 C-matrix (flip mode -> send -> observe -> restore normal)
 | mode | error surfaced? | appended? | next send ok? | duration | logged in mock_requests.jsonl? | verdict | fail→row |
