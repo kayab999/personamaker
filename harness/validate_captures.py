@@ -7,6 +7,7 @@ markers :387,:395,:421,:429,:435,:517; sampling clamp 16..32768 (:458-466)."""
 import argparse
 import json
 import os
+import re
 import sys
 
 # ADAPT if exact strings differ (verify at compose fn head ~:372-386):
@@ -41,10 +42,20 @@ def main():
                 except Exception:
                     pass
 
-    def fingerprint(system):
-        for cid, c in chars.items():
+    def fingerprint(system, chars):
+        for cid, c in chars.items():                      # primary: personality prefix
             p = (c.get("personality") or "")[:60]
             if p and p in system:
+                return cid
+        m = re.search(r"You are ([^\n]+)", system)        # fallback: "You are {name}."
+        if m:                                             # (compose appends "." — strip it)
+            want = m.group(1).strip().rstrip(".")
+            for cid, c in chars.items():
+                if (c.get("name") or "").strip() == want:
+                    return cid
+        for cid, c in chars.items():                      # override cells: system IS the
+            sp = (c.get("system_prompt") or "").strip()   # custom prompt — match by prefix
+            if sp and system.startswith(sp):
                 return cid
         return "?"
 
@@ -62,7 +73,7 @@ def main():
         resp = cap.get("response") or {}
         msgs = req.get("messages") or []
         system = next((m.get("content") or "") for m in msgs if m.get("role") == "system")
-        cid = fingerprint(system)
+        cid = fingerprint(system, chars)
         char = chars.get(cid, {})
         fails, notes = [], []
 

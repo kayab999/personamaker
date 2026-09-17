@@ -60,13 +60,22 @@ F=<appdata>/conversations/<uuid>/messages.ndjson
 truncate -s -1 "$F" → send one message in app → ndjson_check.py --appdata <appdata>
 'concatenated' finding = R8/S0. 'truncated'-only + next line clean = pass (skip+warn held).
 
-## 7. QA-1/2/3 golden pass
-App with tap on. Matrix: 7 default personas × modes × RAG on/off × override on/off
-× speaker name. Then:
-  validate_captures.py --captures harness/captures.jsonl --appdata <dir> --ctx 8192
-Sampling sweep: set temp/max_tokens/top_p in Settings, resend, re-validate with
-  --expect-sampling 0.7,2048,0.9   (also try max_tokens 50000 → silent-clamp note F-013)
-Commit goldens (captures.jsonl curated per matrix cell) once green.
+## 7. QA-1/2/3 golden pass — BATCHED (one sampling per file; validator applies
+--expect-sampling to every line). Prep first: 3 disposable in-app characters
+(Audit Disposable = default copy + avatar/voice for T-9; Audit Override =
+system_prompt set; Audit Minimal = name-only), one small knowledge doc with a
+distinctive fact on the G2 base persona (via app UI), fresh logs
+(`rm captures.jsonl mock_hits.jsonl mock_state.json`).
+| Batch | Content | Sends | Validate | Destination |
+|---|---|---|---|---|
+| G1 | 7 defaults, default mode | 7 | no --expect-sampling | captures_golden.jsonl |
+| G2 | full-factorial on ONE base persona (modes ×4–5, RAG off/on, override, nickname, empty-personality) — compose is persona-independent, ~10 sends cover what 112 would | ~10 | same | append goldens |
+| S1 | sweep 0.7/2048/0.9 | 1 | --expect-sampling 0.7,2048,0.9 | append goldens |
+| S2 | clamp probe max_tokens 50000 | 1 | manual: sent must be 32768 → F-013 note | append goldens |
+| F1 | §4c seed repro (2 sends) | 2 | --ctx 8192 → BUDGET(exact) FAIL **expected** | EVIDENCE_F001.jsonl, NEVER goldens |
+Order: §7 BEFORE §4c (the ~72k F-001 line fails BUDGET by design and must not
+enter goldens). T-1 freebie: run the first RAG-on cell with network BLOCKED
+(fail-closed? chat continues? = T-1 evidence), then unblock for the rest.
 
 ## 8. Phase 3 lifecycle
 T-2: regen ×5 → reload → exactly one assistant after last user; walk counts live msgs.

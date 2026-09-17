@@ -32,9 +32,10 @@ Note: goldens (§7) unaffected by model choice — short conversations never hit
 
 ## §6 B4: file ___ ; ndjson_check -> [ ] clean [ ] truncated-only (pass) [ ] concatenated (S0/R8)
 
-## §7 goldens: tap lines ___ ; usage present? ___ ; matrix cells ___ ;
-validate_captures --ctx 8192 -> ___ pass / ___ fail (paste FAILs) ;
-sampling: UI(0.7,2048,0.9) sent ___ ; UI max_tokens 50000 sent ___ (F-013) ; goldens committed [ ]
+## §7 goldens (batches separate; F1 NEVER in goldens — see §4c):
+G1 (7 defaults): ___ pass / ___ fail ; G2 (single-persona factorial ~10): ___ / ___ ;
+S1 --expect-sampling 0.7,2048,0.9: sent ___ ; S2 max_tokens 50000 → sent ___ (expect 32768, F-013) ;
+goldens file: ___ ; committed [ ] ; T-1 blocked-net first RAG query: ___ (fail-closed? chat continued?)
 
 ## §8 lifecycle: T-2 assistants-after-reload ___ (expect 1) ; T-3 rename id preserved? ___ delete+send actionable? ___ ;
 T-9 fields lost ___ binaries lost (expected) ___ ; T-10 auto-repair? ___ ; QA-7 pill ___ vs est ___ vs usage ___ (Δ ___%, F-016)
