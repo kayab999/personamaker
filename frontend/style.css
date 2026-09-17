@@ -1,0 +1,446 @@
+/* Custom scrollbar for dark theme */
+.custom-scrollbar::-webkit-scrollbar {
+    width: 5px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+    background: #3a3a55;
+    border-radius: 10px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: #4a4a65;
+}
+
+/* Horizontal scrollbar */
+.custom-scrollbar-horizontal::-webkit-scrollbar {
+    height: 3px;
+}
+.custom-scrollbar-horizontal::-webkit-scrollbar-track {
+    background: transparent;
+}
+.custom-scrollbar-horizontal::-webkit-scrollbar-thumb {
+    background: #2a2a40;
+    border-radius: 10px;
+}
+
+/* Animations */
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+.animate-fadeIn {
+    animation: fadeIn 0.3s ease-out;
+}
+
+@keyframes scaleIn {
+    from { opacity: 0; transform: scale(0.95); }
+    to { opacity: 1; transform: scale(1); }
+}
+.animate-scaleIn {
+    animation: scaleIn 0.2s ease-out;
+}
+
+@keyframes slideInRight {
+    from { opacity: 0; transform: translateX(20px); }
+    to { opacity: 1; transform: translateX(0); }
+}
+.animate-slideInRight {
+    animation: slideInRight 0.25s ease-out;
+}
+
+/* Streaming dots animation */
+.streaming-dots span {
+    display: inline-block;
+}
+@keyframes bounce {
+    0%, 80%, 100% { transform: translateY(0); }
+    40% { transform: translateY(-6px); }
+}
+
+/* Textarea focus glow */
+textarea:focus {
+    box-shadow: 0 0 0 2px rgba(124, 58, 237, 0.15), 0 0 20px rgba(124, 58, 237, 0.05);
+}
+
+/* Smooth all transitions */
+* {
+    transition-property: background-color, border-color, color, box-shadow;
+    transition-duration: 150ms;
+    transition-timing-function: ease-in-out;
+}
+
+/* Character card active state pulse */
+.character-card-active {
+    box-shadow: 0 0 0 2px rgba(124, 58, 237, 0.5), 0 0 15px rgba(124, 58, 237, 0.2);
+}
+
+/* Message hover actions */
+.message-actions {
+    opacity: 0;
+    transition: opacity 0.2s ease;
+}
+.message-group:hover .message-actions {
+    opacity: 1;
+}
+
+/* Prevent body scroll when modals open */
+body.modal-open {
+    overflow: hidden;
+}
+
+/*
+ * Critical UI fallbacks when Tailwind CDN is slow/offline (packaged app).
+ * Without these, .hidden does nothing and modals never appear correctly.
+ */
+.hidden {
+    display: none !important;
+}
+
+#settingsModal:not(.hidden),
+#characterEditorModal:not(.hidden),
+#diagnosticsModal:not(.hidden),
+#aboutModal:not(.hidden),
+#helpModal:not(.hidden),
+#confirmDeleteModal:not(.hidden) {
+    display: flex !important;
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+}
+
+#aboutModal:not(.hidden),
+#diagnosticsModal:not(.hidden),
+#helpModal:not(.hidden) {
+    z-index: 80;
+}
+
+#confirmDeleteModal:not(.hidden) {
+    z-index: 70;
+}
+
+/* Mode cards */
+.mode-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    padding: 12px 8px;
+    background: #222240;
+    border: 1.5px solid transparent;
+    border-radius: 12px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+.mode-card:hover {
+    background: #2a2a45;
+    border-color: rgba(124, 58, 237, 0.3);
+}
+.mode-card.active {
+    background: rgba(124, 58, 237, 0.15);
+    border-color: rgba(124, 58, 237, 0.5);
+    box-shadow: 0 0 12px rgba(124, 58, 237, 0.15);
+}
+.mode-card.active span:nth-child(2) {
+    color: #a78bfa;
+}
+
+/* Section headers */
+.section-header {
+    font-size: 12px;
+    font-weight: 600;
+    color: #6b7280;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    margin-bottom: 8px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid rgba(75, 85, 99, 0.2);
+}
+
+/* Voice selector buttons */
+.voice-btn {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 10px;
+    background: #222240;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    color: #9ca3af;
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+.voice-btn:hover {
+    background: #2a2a45;
+    color: #d1d5db;
+}
+.voice-btn.active {
+    background: rgba(124, 58, 237, 0.2);
+    border-color: rgba(124, 58, 237, 0.4);
+    color: #a78bfa;
+}
+
+/* Narrator message style */
+.narrator-message {
+    text-align: center;
+    padding: 8px 16px;
+}
+.narrator-message .narrator-content {
+    display: inline-block;
+    background: rgba(124, 58, 237, 0.08);
+    border: 1px solid rgba(124, 58, 237, 0.15);
+    border-radius: 12px;
+    padding: 10px 20px;
+    max-width: 85%;
+    color: #c4b5fd;
+    font-style: italic;
+    font-size: 13px;
+    line-height: 1.6;
+}
+
+/* Generate button (✨) */
+.generate-btn {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    width: 30px;
+    height: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(124, 58, 237, 0.15);
+    border: 1px solid rgba(124, 58, 237, 0.25);
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 14px;
+    transition: all 0.2s ease;
+    z-index: 2;
+    padding: 0;
+    line-height: 1;
+}
+.generate-btn:hover {
+    background: rgba(124, 58, 237, 0.3);
+    border-color: rgba(124, 58, 237, 0.5);
+    transform: scale(1.1);
+}
+.generate-btn:active {
+    transform: scale(0.95);
+}
+.generate-btn.generating {
+    opacity: 0.5;
+    pointer-events: none;
+    animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 0.5; }
+    50% { opacity: 1; }
+}
+
+/* Markdown-like styling in messages */
+.message-content p {
+    margin-bottom: 0.5rem;
+}
+.message-content p:last-child {
+    margin-bottom: 0;
+}
+.message-content code {
+    background: rgba(124, 58, 237, 0.2);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 0.85em;
+}
+.message-content pre {
+    background: #1a1a2e;
+    border: 1px solid #333;
+    border-radius: 8px;
+    padding: 12px;
+    overflow-x: auto;
+    margin: 8px 0;
+}
+.message-content pre code {
+    background: none;
+    padding: 0;
+}
+.message-content ul, .message-content ol {
+    margin: 8px 0;
+    padding-left: 20px;
+}
+.message-content li {
+    margin-bottom: 4px;
+}
+.message-content blockquote {
+    border-left: 3px solid #7c3aed;
+    padding-left: 12px;
+    color: #a0a0b0;
+    margin: 8px 0;
+}
+.message-content strong {
+    color: #e0e0f0;
+}
+.message-content a {
+    color: #a78bfa;
+    text-decoration: underline;
+}
+
+/* Mode card styles */
+.mode-card {
+    cursor: pointer;
+}
+.mode-card:hover {
+    transform: scale(1.02);
+}
+
+/* Voice tab styles */
+.voice-tab {
+    cursor: pointer;
+    user-select: none;
+}
+.voice-tab:hover {
+    opacity: 0.9;
+}
+.voice-tab.active-voice {
+    background: rgba(124, 58, 237, 0.2);
+    color: #c4b5fd;
+    border-color: rgba(124, 58, 237, 0.3);
+}
+
+/* Default avatar initials (used when avatarUrl is empty) */
+.default-avatar {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    color: white;
+    user-select: none;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,0.15);
+}
+
+/* Narrator message styles */
+.narrator-message {
+    text-align: center;
+    max-width: 90%;
+    margin: 0 auto;
+}
+.narrator-message .narrator-bubble {
+    background: rgba(124, 58, 237, 0.08);
+    border-left: 2px solid rgba(124, 58, 237, 0.3);
+    border-radius: 0 12px 12px 0;
+    padding: 10px 16px;
+    display: inline-block;
+    text-align: left;
+    max-width: 100%;
+}
+.narrator-message .narrator-bubble p {
+    font-style: italic;
+    color: #a0a0c0;
+}
+
+/* Guidance panel slide */
+#guidancePanel {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.3s ease, padding 0.3s ease, opacity 0.2s ease;
+    opacity: 0;
+}
+#guidancePanel.guidance-open {
+    max-height: 200px;
+    opacity: 1;
+}
+
+/* Vision: Image thumbnails inside chat messages */
+.message-images {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+}
+.message-images img {
+    max-width: 140px;
+    max-height: 100px;
+    border-radius: 6px;
+    border: 1px solid #3a3a55;
+    cursor: pointer;
+    object-fit: cover;
+    transition: transform 0.1s ease;
+}
+.message-images img:hover {
+    border-color: #7c3aed;
+    transform: scale(1.02);
+}
+
+/* Collapsible section arrow */
+.collapsible-arrow-open {
+    transform: rotate(90deg);
+}
+
+/* Mode badge on character list */
+.mode-badge {
+    font-size: 8px;
+    line-height: 1;
+    padding: 2px 5px;
+    border-radius: 4px;
+    background: rgba(124, 58, 237, 0.15);
+    color: #a78bfa;
+}
+
+/* Markdown content inside About/Help modals (simple renderer output) */
+.md-content h1, .md-content h2, .md-content h3 {
+    font-weight: 600;
+    color: #e5e7eb;
+    margin-top: 0.75rem;
+    margin-bottom: 0.25rem;
+    line-height: 1.25;
+}
+.md-content h1 { font-size: 1.05rem; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 2px; }
+.md-content h2 { font-size: 0.95rem; }
+.md-content h3 { font-size: 0.875rem; color: #d1d5db; }
+
+.md-content p {
+    margin-bottom: 0.4rem;
+    color: #cbd5e1;
+}
+
+.md-content ul {
+    margin: 0.25rem 0 0.5rem;
+    padding-left: 1.15rem;
+}
+.md-content li {
+    margin-bottom: 1px;
+    color: #cbd5e1;
+}
+
+.md-content hr {
+    border-color: rgba(255,255,255,0.1);
+    margin: 0.6rem 0;
+}
+
+.md-content pre {
+    font-size: 0.75rem;
+    line-height: 1.35;
+}
+.md-content code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    background: rgba(0,0,0,0.45);
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-size: 0.8em;
+}
+.md-content pre code {
+    background: transparent;
+    padding: 0;
+    font-size: inherit;
+}
+
+.md-content strong {
+    color: #e5e7eb;
+    font-weight: 600;
+}

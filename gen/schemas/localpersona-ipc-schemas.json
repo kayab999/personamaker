@@ -1,0 +1,355 @@
+{
+  "definitions": {
+    "ImageReference": {
+      "properties": {
+        "height": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "mime_type": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "width": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "path",
+        "mime_type"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "Canonical JSON schemas for LocalPersona IPC types (Tauri commands). This is the contract. Update the golden file when Rust structs change.",
+  "schemas": {
+    "ChatMessage": {
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "conversation_id": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "images": {
+          "items": {
+            "$ref": "#/definitions/ImageReference"
+          },
+          "type": "array"
+        },
+        "role": {
+          "enum": [
+            "user",
+            "assistant",
+            "narrator"
+          ],
+          "type": "string"
+        },
+        "speaker_id": {
+          "type": "string"
+        },
+        "speaker_name": {
+          "type": "string"
+        },
+        "timestamp": {
+          "description": "Epoch millis",
+          "type": "integer"
+        },
+        "token_count": {
+          "default": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "conversation_id",
+        "speaker_id",
+        "speaker_name",
+        "content",
+        "timestamp",
+        "role"
+      ],
+      "type": "object"
+    },
+    "ConversationMetadata": {
+      "properties": {
+        "created_at": {
+          "type": "integer"
+        },
+        "id": {
+          "type": "string"
+        },
+        "last_message_preview": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_message_timestamp": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "message_count": {
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        },
+        "participant_ids": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "updated_at": {
+          "type": "integer"
+        },
+        "version": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "id",
+        "name",
+        "participant_ids",
+        "created_at",
+        "updated_at",
+        "message_count"
+      ],
+      "type": "object"
+    },
+    "ServerStartRequest": {
+      "properties": {
+        "ctx_size": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "flash_attn": {
+          "type": "boolean"
+        },
+        "gpu_layers": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "mmproj_path": {
+          "description": "Path to multimodal projector",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model_path": {
+          "description": "Absolute path to GGUF model",
+          "type": "string"
+        },
+        "preferred_port": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "threads": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "model_path",
+        "flash_attn"
+      ],
+      "type": "object"
+    },
+    "ServerStatus": {
+      "properties": {
+        "api_base": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "max_requests_before_reset": {
+          "type": "integer"
+        },
+        "model_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pid": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "port": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "request_count": {
+          "type": "integer"
+        },
+        "running": {
+          "type": "boolean"
+        },
+        "starting": {
+          "type": "boolean"
+        },
+        "vision_enabled": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "running",
+        "starting",
+        "vision_enabled",
+        "request_count",
+        "max_requests_before_reset"
+      ],
+      "type": "object"
+    },
+    "StoredCharacter": {
+      "description": "Wire format is camelCase (serde rename_all). Deser also accepts snake_case aliases.",
+      "properties": {
+        "avatarColor": {
+          "type": "string"
+        },
+        "avatarUrl": {
+          "description": "Relative path like avatars/xxx.png (Rust field: avatar_path)",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "createdAt": {
+          "description": "Epoch millis",
+          "type": "integer"
+        },
+        "greeting": {
+          "type": "string"
+        },
+        "hasKnowledgeBase": {
+          "type": "boolean"
+        },
+        "id": {
+          "description": "Unique character identifier",
+          "type": "string"
+        },
+        "isPublicSpawn": {
+          "type": "boolean"
+        },
+        "mode": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "personality": {
+          "type": "string"
+        },
+        "scenario": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "spawnLocation": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "systemPrompt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "userDescription": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "userNickname": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version": {
+          "description": "Schema version for migrations",
+          "type": "integer"
+        },
+        "voiceMode": {
+          "enum": [
+            "none",
+            "preset",
+            "custom_sample"
+          ],
+          "type": "string"
+        },
+        "voicePreset": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "voiceSamplePath": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "writingInstructions": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "mode",
+        "avatarColor",
+        "personality",
+        "greeting",
+        "createdAt"
+      ],
+      "type": "object"
+    }
+  },
+  "version": "1.0"
+}

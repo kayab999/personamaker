@@ -1,0 +1,16 @@
+{"mode": "normal", "path": "/v1/chat/completions", "req_bytes": 60, "t": 1788975931.347}
+{"mode": "redirect", "path": "/v1/chat/completions", "req_bytes": 2, "t": 1788975938.907}
+{"mode": "redirect", "path": "/v1/chat/completions", "req_bytes": 2, "t": 1788975938.921}
+{"mode": "relaylog", "path": "/v1/chat/completions", "req_bytes": 0, "t": 1788975938.923}
+{"mode": "hang", "path": "/v1/chat/completions", "req_bytes": 47, "t": 1789075269.311}
+{"mode": "length", "path": "/v1/chat/completions", "req_bytes": 47, "t": 1789075269.617}
+{"mode": "500", "path": "/v1/chat/completions", "req_bytes": 47, "t": 1789075269.628}
+{"mode": "redirect", "path": "/v1/chat/completions", "req_bytes": 47, "t": 1789075270.155}
+{"mode": "malformed", "path": "/v1/chat/completions", "req_bytes": 47, "t": 1789075359.138}
+{"mode": "empty", "path": "/v1/chat/completions", "req_bytes": 47, "t": 1789075359.183}
+{"mode": "hang", "path": "/v1/chat/completions", "req_bytes": 47, "t": 1789075359.26}
+{"mode": "500", "path": "/v1/chat/completions", "req_bytes": 47, "t": 1789075359.493}
+{"mode": "length", "path": "/v1/chat/completions", "req_bytes": 47, "t": 1789075359.576}
+{"mode": "redirect", "path": "/v1/chat/completions", "req_bytes": 47, "t": 1789075359.743}
+{"mode": "length", "path": "/v1/chat/completions", "req_bytes": 47, "t": 1789643855.76}
+{"mode": "normal", "path": "/v1/chat/completions", "req_bytes": 128, "t": 1789649642.978}

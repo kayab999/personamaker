@@ -1,0 +1,47 @@
+# Build artifacts
+/target
+/dist
+/src-tauri/target
+
+# Tauri
+tauri.conf.local.json
+
+# Large model files (local testing only — never ship in installers)
+*.gguf
+*.bin
+*.safetensors
+test-models/
+models/
+
+# IDE / Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Audit harness generated files (never commit captures/logs)
+harness/mock_requests.jsonl
+harness/mock_state.json
+harness/captures.jsonl
+harness/soak.csv
+harness/fidelity_out/
+docs/handbook/AUDIT_0.9.0-rc.1/**/captures/
+
+# Environment
+.env
+.env.local
+
+# Node (if we ever add a build step)
+node_modules/
+package-lock.json
+
+# Keep lockfile for reproducible app builds
+# (do not ignore Cargo.lock for this binary crate)

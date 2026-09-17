@@ -1,0 +1,782 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LocalPersona — AI Characters with Local GGUF Models</title>
+    <script src="vendor/tailwind.js"></script>
+    <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Audit R5: Tailwind vendored locally (frontend/vendor/tailwind.js, 398KB) to satisfy offline-by-design. Fonts still CDN with CSP allowance — full font vendoring deferred. -->
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: { sans: ['Inter', 'system-ui', 'sans-serif'] },
+                    colors: {
+                        surface: { DEFAULT: '#1a1a2e', light: '#222240', lighter: '#2a2a45', hover: '#333358' },
+                        accent: { DEFAULT: '#7c3aed', light: '#a78bfa', glow: '#c4b5fd' },
+                        chat: { user: '#3b3b5c', ai: '#1e1e35' },
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-[#0f0f1a] text-gray-100 font-sans h-screen overflow-hidden">
+
+    <!-- Mobile Header -->
+    <header class="lg:hidden flex items-center justify-between px-4 py-3 bg-surface border-b border-gray-700/50 z-30">
+        <button id="mobileMenuBtn" class="p-2 rounded-lg hover:bg-surface-hover transition-colors" aria-label="Menu">
+            <i data-lucide="menu" class="w-5 h-5"></i>
+        </button>
+        <h1 class="text-sm font-semibold tracking-wide text-accent-light truncate max-w-[200px]" id="mobileTitle">LocalPersona</h1>
+        <button id="mobileSettingsBtn" class="p-2 rounded-lg hover:bg-surface-hover transition-colors" aria-label="Settings">
+            <i data-lucide="settings" class="w-5 h-5"></i>
+        </button>
+    </header>
+
+    <!-- Overlay for mobile sidebar -->
+    <div id="sidebarOverlay" class="fixed inset-0 bg-black/60 z-40 hidden lg:hidden backdrop-blur-sm transition-opacity"></div>
+
+    <!-- Main Layout -->
+    <div class="flex h-full pt-0 lg:pt-0">
+
+        <!-- Sidebar -->
+        <aside id="sidebar" class="fixed lg:relative z-50 lg:z-auto w-72 lg:w-80 h-full bg-surface border-r border-gray-700/50 flex flex-col transform -translate-x-full lg:translate-x-0 transition-transform duration-300 ease-in-out overflow-hidden">
+            <!-- Sidebar Header -->
+            <div class="p-5 border-b border-gray-700/40 flex-shrink-0">
+                <div class="flex items-center justify-between mb-4">
+                    <h1 class="text-lg font-bold tracking-tight">
+                        <span class="text-accent-light">Local</span><span class="text-white">Contacts</span>
+                    </h1>
+                    <div id="connectionDot" class="w-2.5 h-2.5 rounded-full bg-red-400 shadow-lg shadow-red-500/40 animate-pulse" title="Connection status"></div>
+                </div>
+                <div class="flex gap-2">
+                    <button id="newCharacterBtn" class="flex-1 flex items-center justify-center gap-2 px-3 py-2.5 bg-accent hover:bg-accent/80 text-white text-sm font-medium rounded-xl transition-all duration-200 hover:shadow-lg hover:shadow-accent/25 active:scale-[0.97]">
+                        <i data-lucide="user-plus" class="w-4 h-4"></i> Add Contact
+                    </button>
+                    <button id="settingsBtn" class="flex items-center justify-center w-10 h-10 bg-surface-light hover:bg-surface-hover rounded-xl transition-all duration-200 active:scale-[0.97]" aria-label="Settings">
+                        <i data-lucide="settings" class="w-4 h-4 text-gray-300"></i>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Connection Banner -->
+            <div id="connectionBanner" class="mx-4 mt-3 px-3 py-2 bg-red-500/10 border border-red-500/30 rounded-lg text-xs text-red-300 flex items-center gap-2 flex-shrink-0 hidden">
+                <i data-lucide="alert-circle" class="w-3.5 h-3.5 flex-shrink-0"></i>
+                <span class="truncate">LLM server not connected</span>
+            </div>
+
+            <!-- Character List -->
+            <div class="flex-1 overflow-y-auto px-3 py-3 space-y-1 custom-scrollbar" id="characterList">
+                <!-- Characters rendered here -->
+            </div>
+
+            <!-- Sidebar Footer -->
+            <div class="p-4 border-t border-gray-700/40 flex-shrink-0 space-y-3">
+                <div class="flex gap-2">
+                    <button id="exportAllBtn" class="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-surface-light hover:bg-surface-hover text-gray-300 text-xs font-medium rounded-xl transition-all duration-200" title="Export all contacts">
+                        <i data-lucide="download" class="w-3.5 h-3.5"></i> Export All
+                    </button>
+                    <button id="importBtn" class="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-surface-light hover:bg-surface-hover text-gray-300 text-xs font-medium rounded-xl transition-all duration-200" title="Import contacts">
+                        <i data-lucide="upload" class="w-3.5 h-3.5"></i> Import
+                    </button>
+                </div>
+                <div class="flex items-center gap-3 text-xs text-gray-500">
+                    <i data-lucide="cpu" class="w-3.5 h-3.5"></i>
+                    <span>Simulated contacts</span>
+                </div>
+                <input type="file" id="importFileInput" accept=".json" class="hidden" title="Import contacts">
+                <!-- Hidden image file input for vision -->
+                <input type="file" id="imageFileInput" accept="image/*" multiple class="hidden">
+            </div>
+        </aside>
+
+        <!-- Main Chat Area -->
+        <main class="flex-1 flex flex-col min-w-0 bg-[#0f0f1a] relative">
+
+            <!-- Top Bar: Character Quick Switch + context usage -->
+            <div class="flex-shrink-0 border-b border-gray-700/40 bg-surface/80 backdrop-blur-sm px-4 py-3 overflow-x-auto custom-scrollbar-horizontal" id="characterQuickBar">
+                <div class="flex items-center gap-3 min-w-max">
+                    <div class="flex gap-3 min-w-max" id="quickSwitchCards">
+                        <!-- Quick switch cards rendered here -->
+                    </div>
+                    <span id="contextUsagePill" class="hidden ml-auto flex-shrink-0 text-[10px] font-mono text-emerald-400/90 bg-emerald-950/40 border border-emerald-800/40 px-2 py-1 rounded-full" title="Estimated context usage">
+                        Context
+                    </span>
+                </div>
+            </div>
+
+            <!-- Chat Messages Area -->
+            <div id="chatMessages" class="flex-1 overflow-y-auto px-4 py-6 custom-scrollbar space-y-4">
+                <!-- Welcome State -->
+                <div id="welcomeState" class="flex flex-col items-center justify-center h-full text-center px-4">
+                    <div class="w-20 h-20 rounded-2xl bg-accent/20 flex items-center justify-center mb-6 shadow-lg shadow-accent/10">
+                        <i data-lucide="message-circle" class="w-10 h-10 text-accent-light"></i>
+                    </div>
+                    <h2 class="text-2xl font-bold text-white mb-2">Your Contacts</h2>
+                    <p class="text-gray-400 max-w-md mb-6 leading-relaxed">
+                        Add simulated contacts and chat with them using your local models.
+                    </p>
+
+                    <!-- Dynamic inference quick-start area (uses scan_for_models) -->
+                    <div id="welcomeInferenceStatus" class="mb-6 w-full max-w-sm bg-surface-light/60 border border-gray-700/40 rounded-2xl p-4 text-left hidden">
+                        <div class="flex items-center gap-2 mb-1">
+                            <i data-lucide="cpu" class="w-4 h-4 text-accent"></i>
+                            <span class="text-sm font-medium text-gray-200">Local Inference</span>
+                        </div>
+                        <div id="welcomeInferenceText" class="text-xs text-gray-400 mb-3">
+                            Ready to start a local model.
+                        </div>
+                        <button id="welcomeQuickStartBtn"
+                                class="w-full py-2 text-sm bg-emerald-600/90 hover:bg-emerald-600 text-white font-medium rounded-xl transition-all">
+                            Detect Models &amp; Start Server
+                        </button>
+                    </div>
+
+                    <div class="flex flex-wrap gap-3 justify-center">
+                        <button id="startChatBtn" class="px-6 py-3 bg-accent hover:bg-accent/80 text-white font-medium rounded-xl transition-all duration-200 hover:shadow-lg hover:shadow-accent/25 active:scale-[0.97]">
+                            Open a Chat
+                        </button>
+                        <button id="quickSettingsWelcomeBtn" class="px-6 py-3 bg-surface-light hover:bg-surface-hover text-gray-200 font-medium rounded-xl transition-all duration-200 active:scale-[0.97]">
+                            Settings
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Messages rendered here -->
+                <div id="messagesContainer" class="hidden space-y-4"></div>
+
+                <!-- Streaming message placeholder -->
+                <div id="streamingMessage" class="hidden flex items-start gap-3 animate-fadeIn">
+                    <div class="w-8 h-8 rounded-full bg-accent/30 flex-shrink-0 flex items-center justify-center text-xs font-bold text-accent-light">AI</div>
+                    <div class="bg-chat-ai rounded-2xl rounded-tl-md px-4 py-3 max-w-[80%] shadow-sm">
+                        <div class="streaming-dots flex gap-1.5 py-1">
+                            <span class="w-2 h-2 bg-accent-light rounded-full animate-bounce" style="animation-delay: 0ms;"></span>
+                            <span class="w-2 h-2 bg-accent-light rounded-full animate-bounce" style="animation-delay: 150ms;"></span>
+                            <span class="w-2 h-2 bg-accent-light rounded-full animate-bounce" style="animation-delay: 300ms;"></span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Typing indicator (messenger style) -->
+                <div id="typingIndicator" class="hidden flex items-center gap-2 px-4 py-1 text-sm text-gray-400">
+                    <span class="font-medium" id="typingContactName">Contact</span> is typing
+                    <span class="typing-dots inline-flex gap-0.5">
+                        <span class="w-1 h-1 bg-gray-400 rounded-full animate-pulse" style="animation-delay: 0ms;"></span>
+                        <span class="w-1 h-1 bg-gray-400 rounded-full animate-pulse" style="animation-delay: 200ms;"></span>
+                        <span class="w-1 h-1 bg-gray-400 rounded-full animate-pulse" style="animation-delay: 400ms;"></span>
+                    </span>
+                </div>
+            </div>
+
+            <!-- Input Area -->
+            <div class="flex-shrink-0 border-t border-gray-700/40 bg-surface/90 backdrop-blur-sm">
+                <!-- Guidance Panel (collapsible) -->
+                <div id="guidancePanel" class="hidden border-b border-gray-700/20 px-4 py-3">
+                    <div class="max-w-4xl mx-auto space-y-2">
+                        <div>
+                            <label class="text-[10px] text-gray-500 uppercase tracking-wider font-semibold">What happens next?</label>
+                            <input type="text" id="guidanceNextInput" placeholder="Optional: Describe what should happen next..." class="w-full bg-surface-light border border-gray-600/30 rounded-lg px-3 py-1.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-accent/40 transition-all">
+                        </div>
+                        <div>
+                            <label class="text-[10px] text-gray-500 uppercase tracking-wider font-semibold">Writing Instructions</label>
+                            <input type="text" id="guidanceInstructionsInput" placeholder="Style reminders, things to avoid..." class="w-full bg-surface-light border border-gray-600/30 rounded-lg px-3 py-1.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-accent/40 transition-all">
+                        </div>
+                    </div>
+                </div>
+                <div class="px-4 py-3">
+                    <div class="max-w-4xl mx-auto">
+                        <!-- Voice Selector (temporarily hidden - will be replaced by dynamic multi-persona participant bar in Phase 2) -->
+                        <div class="flex gap-1 mb-2 items-center hidden" id="voiceSelector">
+                            <button data-voice="user" class="voice-tab px-3 py-1 rounded-lg text-xs font-medium bg-accent/20 text-accent-light border border-accent/30 transition-all">👤 <span class="voice-user-label">You</span></button>
+                            <button data-voice="bot" class="voice-tab px-3 py-1 rounded-lg text-xs font-medium bg-surface-light text-gray-400 border border-transparent transition-all hover:text-gray-200">🤖 <span class="voice-bot-label">Bot</span></button>
+                            <button data-voice="narrator" class="voice-tab px-3 py-1 rounded-lg text-xs font-medium bg-surface-light text-gray-400 border border-transparent transition-all hover:text-gray-200">🎭 Narrator</button>
+                            <div class="flex-1"></div>
+                            <button id="toggleGuidanceBtn" class="p-1.5 rounded-lg text-gray-500 hover:text-gray-300 hover:bg-surface-light transition-all" title="Guidance panel">
+                                <i data-lucide="compass" class="w-3.5 h-3.5"></i>
+                            </button>
+                        </div>
+                        <div class="flex gap-2 items-end bg-surface/90 px-3 py-2 rounded-3xl border border-gray-700/40">
+                            <button id="attachFileBtn" type="button" class="p-2 text-gray-400 hover:text-gray-200 transition-colors" title="Attach image" aria-label="Attach image">
+                                <i data-lucide="paperclip" class="w-4 h-4"></i>
+                            </button>
+                            <div class="flex-1 relative">
+                                <!-- Image preview strip -->
+                                <div id="imagePreviewStrip" class="hidden flex gap-2 mb-2 overflow-x-auto custom-scrollbar-horizontal">
+                                    <!-- Thumbnails populated by JS -->
+                                </div>
+
+                                <textarea
+                                    id="chatInput"
+                                    rows="1"
+                                    placeholder="Type a message..."
+                                    class="w-full bg-surface-light border border-gray-600/50 rounded-2xl px-4 py-3 pr-12 text-sm text-white placeholder-gray-500 resize-none focus:outline-none focus:border-accent/60 focus:ring-1 focus:ring-accent/30 transition-all custom-scrollbar max-h-32"
+                                    disabled
+                                ></textarea>
+
+                                <!-- Image upload button -->
+                                <button
+                                    id="imageUploadBtn"
+                                    class="absolute left-2 bottom-2 p-2 text-gray-400 hover:text-accent hover:bg-surface-light rounded-xl transition-all duration-200 active:scale-[0.93]"
+                                    title="Attach image (vision models only)"
+                                    disabled
+                                    aria-label="Attach image"
+                                >
+                                    <i data-lucide="image" class="w-4 h-4"></i>
+                                </button>
+
+                                <button
+                                    id="sendBtn"
+                                    class="absolute right-2 bottom-2 p-2 bg-accent hover:bg-accent/80 text-white rounded-xl transition-all duration-200 active:scale-[0.93] disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-accent"
+                                    disabled
+                                    aria-label="Send message"
+                                >
+                                    <i data-lucide="send" class="w-4 h-4"></i>
+                                </button>
+                            </div>
+                            <button
+                                id="regenerateBtn"
+                                class="hidden p-3 bg-surface-light hover:bg-surface-hover text-gray-300 rounded-xl transition-all duration-200 active:scale-[0.93] flex-shrink-0"
+                                title="Regenerate last response"
+                                aria-label="Regenerate"
+                            >
+                                <i data-lucide="refresh-cw" class="w-4 h-4"></i>
+                            </button>
+                        </div>
+                        <p id="charCountHint" class="text-[10px] text-gray-600 text-right mt-1 mr-1 hidden">0 / 8000</p>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Character Config Modal -->
+    <div id="characterEditorModal" class="fixed inset-0 z-[60] flex items-center justify-center p-4 hidden">
+        <div class="absolute inset-0 bg-black/70 backdrop-blur-sm" id="charEditorOverlay"></div>
+        <div class="relative bg-surface rounded-2xl border border-gray-700/50 w-full max-w-2xl max-h-[90vh] overflow-y-auto custom-scrollbar shadow-2xl shadow-black/50 animate-scaleIn">
+            <!-- Header -->
+            <div class="sticky top-0 bg-surface border-b border-gray-700/40 px-6 py-4 flex items-center justify-between z-10 rounded-t-2xl">
+                <h3 id="charEditorTitle" class="text-lg font-semibold text-white">Add / Edit Contact</h3>
+                <button id="closeCharEditorBtn" class="p-2 rounded-lg hover:bg-surface-hover transition-colors" aria-label="Close">
+                    <i data-lucide="x" class="w-5 h-5"></i>
+                </button>
+            </div>
+
+            <div class="p-6 space-y-5">
+                <!-- Mode Selection -->
+                <div>
+                    <label class="block text-[10px] font-semibold uppercase tracking-wider text-gray-500 mb-2">Writing Mode</label>
+                    <div class="grid grid-cols-2 sm:grid-cols-4 gap-2" id="modeSelector">
+                        <button data-mode="advanced-chat" class="mode-card flex flex-col items-center gap-1.5 p-3 rounded-xl border-2 transition-all hover:scale-[1.02] active:scale-[0.98] border-accent bg-accent/15 text-accent-light">
+                            <span class="text-lg">🎛️</span>
+                            <span class="text-[11px] font-medium">Advanced Chat</span>
+                        </button>
+                        <button data-mode="adventure" class="mode-card flex flex-col items-center gap-1.5 p-3 rounded-xl border-2 transition-all hover:scale-[1.02] active:scale-[0.98] border-transparent bg-surface-light text-gray-400 hover:text-gray-200">
+                            <span class="text-lg">🧙‍♂️</span>
+                            <span class="text-[11px] font-medium">Adventure</span>
+                        </button>
+                        <button data-mode="story" class="mode-card flex flex-col items-center gap-1.5 p-3 rounded-xl border-2 transition-all hover:scale-[1.02] active:scale-[0.98] border-transparent bg-surface-light text-gray-400 hover:text-gray-200">
+                            <span class="text-lg">📖</span>
+                            <span class="text-[11px] font-medium">Story</span>
+                        </button>
+                        <button data-mode="character-gen" class="mode-card flex flex-col items-center gap-1.5 p-3 rounded-xl border-2 transition-all hover:scale-[1.02] active:scale-[0.98] border-transparent bg-surface-light text-gray-400 hover:text-gray-200">
+                            <span class="text-lg">✨</span>
+                            <span class="text-[11px] font-medium">Character Gen</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Names -->
+                <div>
+                    <div class="flex items-center gap-2 mb-2">
+                        <span class="text-[10px] font-semibold uppercase tracking-wider text-gray-500">— Names —</span>
+                    </div>
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label class="block text-xs font-medium text-gray-400 mb-1.5">Bot / NPC Name</label>
+                            <input type="text" id="charNameInput" placeholder="Bot's nickname..." class="w-full bg-surface-light border border-gray-600/50 rounded-xl px-4 py-2.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-accent/60 focus:ring-1 focus:ring-accent/30 transition-all">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-medium text-gray-400 mb-1.5">Your Name</label>
+                            <input type="text" id="charUserNicknameInput" placeholder="Your nickname..." class="w-full bg-surface-light border border-gray-600/50 rounded-xl px-4 py-2.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-accent/60 focus:ring-1 focus:ring-accent/30 transition-all">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Bot Character Description -->
+                <div>
+                    <div class="flex items-center gap-2 mb-2">
+                        <span class="text-[10px] font-semibold uppercase tracking-wider text-gray-500">— Bot Character —</span>
+                        <span class="text-[10px] text-gray-600 italic">Optional</span>
+                    </div>
+                    <textarea id="charPersonalityInput" rows="3" placeholder="Describe who the AI/bot is and what personality you want them to have..." class="w-full bg-surface-light border border-gray-600/50 rounded-xl px-4 py-3 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-accent/60 focus:ring-1 focus:ring-accent/30 transition-all resize-none custom-scrollbar"></textarea>
+                </div>
+
+                <!-- Your Character Description -->
+                <div>
+                    <div class="flex items-center gap-2 mb-2">
+                        <span class="text-[10px] font-semibold uppercase tracking-wider text-gray-500">— Your Character —</span>
+                        <span class="text-[10px] text-gray-600 italic">Optional</span>
+                    </div>
+                    <textarea id="charUserDescInput" rows="3" placeholder="Describe the character that *you* will be in this chat..." class="w-full bg-surface-light border border-gray-600/50 rounded-xl px-4 py-3 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-accent/60 focus:ring-1 focus:ring-accent/30 transition-all resize-none custom-scrollbar"></textarea>
+                </div>
+
+                <!-- Scenario & Lore -->
+                <div>
+                    <div class="flex items-center gap-2 mb-2">
+                        <span class="text-[10px] font-semibold uppercase tracking-wider text-gray-500">— Scenario & Lore —</span>
+                        <span class="text-[10px] text-gray-600 italic">Optional</span>
+                    </div>
+                    <textarea id="charScenarioInput" rows="3" placeholder="Describe the world, scenario overview, lore, side characters..." class="w-full bg-surface-light border border-gray-600/50 rounded-xl px-4 py-3 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-accent/60 focus:ring-1 focus:ring-accent/30 transition-all resize-none custom-scrollbar"></textarea>
+                </div>
+
+                <!-- Writing Instructions (collapsible) -->
+                <div>
+                    <button id="toggleWritingInstructions" class="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-gray-500 hover:text-gray-300 transition-colors">
+                        <i data-lucide="chevron-right" class="w-3 h-3 transition-transform duration-200"></i> Writing Instructions
+                    </button>
+                    <div id="writingInstructionsSection" class="hidden mt-2">
+                        <input type="text" id="charWritingInstructionsInput" placeholder="Brief writing reminders — style, things to avoid, current arc..." class="w-full bg-surface-light border border-gray-600/50 rounded-xl px-4 py-2.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-accent/60 focus:ring-1 focus:ring-accent/30 transition-all">
+                    </div>
+                </div>
+
+                <!-- Appearance: Avatar & Color -->
+                <div>
+                    <div class="flex items-center gap-2 mb-2">
+                        <span class="text-[10px] font-semibold uppercase tracking-wider text-gray-500">— Appearance —</span>
+                    </div>
+                    <div class="flex items-start gap-4">
+                        <div>
+                            <label class="block text-xs font-medium text-gray-400 mb-1.5">Color</label>
+                            <div class="flex gap-2 flex-wrap" id="colorPicker">
+                                <button data-color="#7c3aed" class="w-8 h-8 rounded-full bg-[#7c3aed] ring-2 ring-white/20 ring-offset-2 ring-offset-surface transition-all"></button>
+                                <button data-color="#ec4899" class="w-8 h-8 rounded-full bg-[#ec4899] transition-all hover:scale-110"></button>
+                                <button data-color="#f59e0b" class="w-8 h-8 rounded-full bg-[#f59e0b] transition-all hover:scale-110"></button>
+                                <button data-color="#10b981" class="w-8 h-8 rounded-full bg-[#10b981] transition-all hover:scale-110"></button>
+                                <button data-color="#3b82f6" class="w-8 h-8 rounded-full bg-[#3b82f6] transition-all hover:scale-110"></button>
+                                <button data-color="#ef4444" class="w-8 h-8 rounded-full bg-[#ef4444] transition-all hover:scale-110"></button>
+                                <button data-color="#8b5cf6" class="w-8 h-8 rounded-full bg-[#8b5cf6] transition-all hover:scale-110"></button>
+                                <button data-color="#06b6d4" class="w-8 h-8 rounded-full bg-[#06b6d4] transition-all hover:scale-110"></button>
+                            </div>
+                        </div>
+                        <div class="flex-1 min-w-0">
+                            <label class="block text-xs font-medium text-gray-400 mb-1.5">Avatar Image</label>
+                            <div class="flex items-center gap-2 mb-2">
+                                <div id="avatarPreview" class="w-10 h-10 rounded-xl overflow-hidden flex-shrink-0 bg-surface-light border border-gray-600/50 flex items-center justify-center">
+                                    <i data-lucide="camera" class="w-4 h-4 text-gray-600"></i>
+                                </div>
+                                <button type="button" id="uploadAvatarBtn" class="px-2.5 py-1.5 bg-surface-light hover:bg-surface-hover text-gray-300 text-xs font-medium rounded-lg transition-all flex items-center gap-1">
+                                    <i data-lucide="upload" class="w-3 h-3"></i> Upload
+                                </button>
+                                <button type="button" id="clearAvatarBtn" class="px-2.5 py-1.5 bg-surface-light hover:bg-surface-hover text-gray-400 text-xs font-medium rounded-lg transition-all hidden" title="Remove">✕</button>
+                                <input type="file" id="avatarFileInput" accept="image/*" class="hidden">
+                            </div>
+                            <input type="url" id="charAvatarUrlInput" placeholder="Or paste image URL..." class="w-full bg-surface-light border border-gray-600/50 rounded-xl px-3 py-2 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-accent/60 focus:ring-1 focus:ring-accent/30 transition-all">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Advanced: System Prompt (collapsible) -->
+                <div>
+                    <button id="toggleSystemPrompt" class="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-gray-500 hover:text-gray-300 transition-colors">
+                        <i data-lucide="chevron-right" class="w-3 h-3 transition-transform duration-200"></i> Advanced: Custom System Prompt
+                    </button>
+                    <div id="systemPromptSection" class="hidden mt-2">
+                        <textarea id="charSystemPromptInput" rows="3" placeholder="Override auto-generated system prompt with your own..." class="w-full bg-surface-light border border-gray-600/50 rounded-xl px-4 py-3 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-accent/60 focus:ring-1 focus:ring-accent/30 transition-all resize-none custom-scrollbar font-mono text-xs"></textarea>
+                    </div>
+                </div>
+
+                <!-- Voice (for local TTS models like Qwen3-TTS VoiceDesign) -->
+                <div>
+                    <div class="flex items-center gap-2 mb-2">
+                        <span class="text-[10px] font-semibold uppercase tracking-wider text-gray-500">— Voice —</span>
+                        <span class="text-[10px] text-amber-500/90 font-medium">Experimental (RC)</span>
+                    </div>
+
+                    <div class="space-y-3">
+                        <!-- Voice Mode -->
+                        <div>
+                            <label class="block text-xs font-medium text-gray-400 mb-1.5">Voice Mode</label>
+                            <div class="flex gap-2" id="voiceModeSelector">
+                                <button data-voice-mode="none" class="flex-1 px-3 py-1.5 text-xs rounded-lg border border-gray-600 bg-surface-light hover:bg-surface-hover text-gray-300 voice-mode-btn active">None</button>
+                                <button data-voice-mode="preset" class="flex-1 px-3 py-1.5 text-xs rounded-lg border border-gray-600 bg-surface-light hover:bg-surface-hover text-gray-300 voice-mode-btn">Preset</button>
+                                <button data-voice-mode="custom" class="flex-1 px-3 py-1.5 text-xs rounded-lg border border-gray-600 bg-surface-light hover:bg-surface-hover text-gray-300 voice-mode-btn">Custom Sample</button>
+                            </div>
+                        </div>
+
+                        <!-- Preset Selector (shown when mode = preset) -->
+                        <div id="voicePresetSection" class="hidden">
+                            <label class="block text-xs font-medium text-gray-400 mb-1.5">Voice Preset</label>
+                            <select id="charVoicePresetInput" class="w-full bg-surface-light border border-gray-600/50 rounded-xl px-3 py-2 text-sm text-white">
+                                <option value="">Select a preset...</option>
+                                <option value="neutral-female-01">Neutral Female 1</option>
+                                <option value="warm-female-02">Warm Female 2</option>
+                                <option value="deep-male-narrator">Deep Male Narrator</option>
+                                <option value="young-male-casual">Young Male Casual</option>
+                                <option value="mysterious-low">Mysterious Low Voice</option>
+                            </select>
+                            <div class="text-[10px] text-gray-500 mt-1">These are example presets. Real voices depend on your TTS backend.</div>
+                        </div>
+
+                        <!-- Custom Voice Sample (shown when mode = custom) -->
+                        <div id="voiceCustomSection" class="hidden">
+                            <label class="block text-xs font-medium text-gray-400 mb-1.5">Voice Sample (for cloning)</label>
+                            <div class="flex items-center gap-2">
+                                <button type="button" id="uploadVoiceSampleBtn" class="px-3 py-1.5 bg-surface-light hover:bg-surface-hover text-gray-300 text-xs font-medium rounded-lg transition-all flex items-center gap-1">
+                                    <i data-lucide="upload" class="w-3 h-3"></i> Upload Sample (10-30s)
+                                </button>
+                                <button type="button" id="clearVoiceSampleBtn" class="px-2 py-1 bg-surface-light hover:bg-surface-hover text-gray-400 text-xs rounded-lg hidden">✕</button>
+                            </div>
+                            <div id="voiceSampleStatus" class="text-[10px] text-gray-500 mt-1 italic">No sample uploaded</div>
+                            <input type="file" id="voiceSampleFileInput" accept="audio/wav,audio/mpeg,audio/ogg,audio/opus,.wav,.mp3,.ogg,.opus" class="hidden">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Persistent Knowledge Base (RAG) -->
+                <div>
+                    <div class="flex items-center gap-2 mb-2">
+                        <span class="text-[10px] font-semibold uppercase tracking-wider text-gray-500">— Knowledge Base (RAG) —</span>
+                        <span class="text-[10px] text-gray-600 italic">Experimental</span>
+                    </div>
+
+                    <div class="space-y-2">
+                        <div class="flex items-center gap-2">
+                            <button type="button" id="uploadKnowledgeBtn"
+                                    class="px-3 py-1.5 bg-surface-light hover:bg-surface-hover text-gray-300 text-xs font-medium rounded-lg transition-all flex items-center gap-1">
+                                <i data-lucide="upload" class="w-3 h-3"></i>
+                                Upload PDF / TXT / MD
+                            </button>
+                            <span id="knowledgeStatus" class="text-[10px] text-gray-500">No documents attached</span>
+                        </div>
+                        <div id="knowledgeList" class="text-xs text-gray-400 space-y-1"></div>
+                        <input type="file" id="knowledgeFileInput" accept=".pdf,.txt,.md,.markdown" class="hidden" multiple>
+                        <p class="text-[10px] text-gray-500">
+                            Upload works, transcripts, letters, or books. The persona will be able to reference them for accurate style and quotes.
+                        </p>
+                    </div>
+                </div>
+
+                <!-- First Message -->
+                <div>
+                    <label class="block text-xs font-medium text-gray-400 mb-1.5">First Message</label>
+                    <input type="text" id="charGreetingInput" placeholder="Hello! How can I help you today?" class="w-full bg-surface-light border border-gray-600/50 rounded-xl px-4 py-2.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-accent/60 focus:ring-1 focus:ring-accent/30 transition-all">
+                </div>
+
+                <!-- Actions -->
+                <div class="flex gap-3 pt-2">
+                    <button id="exportSingleCharBtn" class="px-4 py-2.5 bg-surface-light hover:bg-surface-hover text-gray-300 text-sm font-medium rounded-xl transition-all duration-200 active:scale-[0.97] flex items-center gap-2" title="Export this contact">
+                        <i data-lucide="download" class="w-4 h-4"></i>
+                    </button>
+                    <button id="deleteCharBtn" class="hidden px-4 py-2.5 bg-red-500/20 hover:bg-red-500/30 text-red-300 text-sm font-medium rounded-xl transition-all duration-200 active:scale-[0.97] flex items-center gap-2">
+                        <i data-lucide="trash-2" class="w-4 h-4"></i> Delete Contact
+                    </button>
+                    <button id="saveCharBtn" class="flex-1 px-4 py-2.5 bg-accent hover:bg-accent/80 text-white text-sm font-medium rounded-xl transition-all duration-200 active:scale-[0.97] hover:shadow-lg hover:shadow-accent/25 flex items-center justify-center gap-2">
+                        <i data-lucide="message-circle" class="w-4 h-4"></i> Save Contact
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div id="settingsModal" class="fixed inset-0 z-[60] flex items-center justify-center p-4 hidden">
+        <div class="absolute inset-0 bg-black/70 backdrop-blur-sm" id="settingsOverlay"></div>
+        <div class="relative bg-surface rounded-2xl border border-gray-700/50 w-full max-w-md max-h-[90vh] overflow-y-auto custom-scrollbar shadow-2xl shadow-black/50 animate-scaleIn">
+            <div class="sticky top-0 bg-surface border-b border-gray-700/40 px-6 py-4 flex items-center justify-between z-10 rounded-t-2xl">
+                <h3 class="text-lg font-semibold text-white">Settings</h3>
+                <button id="closeSettingsBtn" class="p-2 rounded-lg hover:bg-surface-hover transition-colors" aria-label="Close">
+                    <i data-lucide="x" class="w-5 h-5"></i>
+                </button>
+            </div>
+            <div class="p-6 space-y-5">
+                <div>
+                    <label class="block text-xs font-medium text-gray-400 mb-1.5">API Type</label>
+                    <select id="apiTypeSelect" class="w-full bg-surface-light border border-gray-600/50 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-accent/60 focus:ring-1 focus:ring-accent/30 transition-all">
+                        <option value="openai-compatible">OpenAI-compatible (llama.cpp server)</option>
+                        <option value="ollama">Ollama</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-gray-400 mb-1.5">API Endpoint URL</label>
+                    <input type="url" id="apiEndpointInput" placeholder="http://localhost:8080/v1/chat/completions" class="w-full bg-surface-light border border-gray-600/50 rounded-xl px-4 py-2.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-accent/60 focus:ring-1 focus:ring-accent/30 transition-all font-mono text-xs">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-gray-400 mb-1.5">Model Name</label>
+                    <input type="text" id="modelNameInput" placeholder="local-model" class="w-full bg-surface-light border border-gray-600/50 rounded-xl px-4 py-2.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-accent/60 focus:ring-1 focus:ring-accent/30 transition-all">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-gray-400 mb-1.5">Temperature: <span id="tempValue">0.7</span></label>
+                    <input type="range" id="temperatureSlider" min="0" max="2" step="0.05" value="0.7" class="w-full accent-accent h-2 rounded-lg cursor-pointer">
+                    <div class="flex justify-between text-[10px] text-gray-600 mt-1"><span>Precise</span><span>Creative</span></div>
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-gray-400 mb-1.5">Max Tokens</label>
+                    <input type="number" id="maxTokensInput" min="64" max="32768" step="64" value="2048" class="w-full bg-surface-light border border-gray-600/50 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-accent/60 focus:ring-1 focus:ring-accent/30 transition-all">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-gray-400 mb-1.5">Top-P: <span id="topPValue">0.9</span></label>
+                    <input type="range" id="topPSlider" min="0" max="1" step="0.05" value="0.9" class="w-full accent-accent h-2 rounded-lg cursor-pointer">
+                </div>
+                <div class="flex items-center justify-between opacity-60" title="Token streaming ships in a post-RC release. Responses currently arrive as complete messages.">
+                    <div>
+                        <span class="text-xs font-medium text-gray-400">Stream Responses</span>
+                        <div class="text-[10px] text-amber-500/90">Coming post-RC — non-stream is stable default</div>
+                    </div>
+                    <button id="streamToggle" disabled class="relative w-11 h-6 rounded-full bg-gray-600 transition-colors duration-200 cursor-not-allowed" role="switch" aria-checked="false" aria-disabled="true">
+                        <span class="absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform duration-200 translate-x-0"></span>
+                    </button>
+                </div>
+                <div class="pt-2 flex gap-3">
+                    <button id="testConnectionBtn" class="flex-1 px-4 py-2.5 bg-surface-light hover:bg-surface-hover text-gray-200 text-sm font-medium rounded-xl transition-all duration-200 active:scale-[0.97] flex items-center justify-center gap-2">
+                        <i data-lucide="plug" class="w-4 h-4"></i> Test Connection
+                    </button>
+                    <button id="saveSettingsBtn" class="flex-1 px-4 py-2.5 bg-accent hover:bg-accent/80 text-white text-sm font-medium rounded-xl transition-all duration-200 active:scale-[0.97]">
+                        Save Settings
+                    </button>
+                    <button id="forceLoadDefaultsBtn" class="px-4 py-2.5 bg-surface-light hover:bg-surface-hover text-gray-300 text-sm font-medium rounded-xl transition-all duration-200 active:scale-[0.97]" title="For testing only">
+                        Force Defaults
+                    </button>
+                </div>
+
+                <!-- Discovered Models (powered by scan_for_models) -->
+                <div class="pt-4 border-t border-gray-700/40">
+                    <div class="flex items-center justify-between mb-2">
+                        <div class="flex items-center gap-2">
+                            <span class="text-xs font-medium text-gray-400">Discovered Models</span>
+                            <span id="modelCountBadge" class="text-[10px] px-1.5 py-px rounded bg-gray-700 text-gray-400 hidden"></span>
+                        </div>
+                        <button id="refreshModelsBtn"
+                                class="text-[10px] px-2 py-0.5 rounded bg-surface-light hover:bg-surface-hover text-gray-300 flex items-center gap-1">
+                            <i data-lucide="refresh-cw" class="w-3 h-3"></i>
+                            <span>Scan</span>
+                        </button>
+                    </div>
+
+                    <!-- Search / Filter -->
+                    <div class="relative mb-2">
+                        <input id="modelSearchInput" type="text" placeholder="Filter models..." 
+                               class="w-full bg-surface-light border border-gray-600/40 rounded-lg pl-8 pr-3 py-1.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-accent/50">
+                        <i data-lucide="search" class="w-3.5 h-3.5 absolute left-2.5 top-2 text-gray-500"></i>
+                    </div>
+
+                    <div id="discoveredModelsList"
+                         class="max-h-[155px] overflow-y-auto custom-scrollbar border border-gray-700/40 rounded-xl bg-[#141426] text-xs">
+                        <!-- Populated dynamically by JS -->
+                        <div class="p-3 text-gray-500 italic text-center">Click "Scan" to discover local GGUF models</div>
+                    </div>
+                    <div class="text-[10px] text-gray-500 mt-1">
+                        Click a model to select it for the server.
+                    </div>
+                </div>
+
+                <!-- Local Inference Server Control -->
+                <div class="pt-4 border-t border-gray-700/40">
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="text-xs font-medium text-gray-400">Local Inference Server</span>
+                        <span id="serverStatusBadge" class="text-[10px] px-2 py-0.5 rounded bg-gray-700 text-gray-400">Not running</span>
+                    </div>
+
+                    <div class="text-[10px] text-gray-500 mb-2 font-mono" id="serverStatusDetail">—</div>
+
+                    <!-- llama-server binary selector -->
+                    <div class="mb-2">
+                        <div class="flex items-center gap-2 mb-1">
+                            <span class="text-[10px] text-gray-400">llama-server binary:</span>
+                            <button id="browseLlamaServerBtn"
+                                    class="text-[10px] px-2 py-0.5 rounded bg-surface-light hover:bg-surface-hover text-gray-300">
+                                Browse...
+                            </button>
+                        </div>
+                        <div id="llamaServerPathDisplay" 
+                             class="text-[10px] font-mono px-2 py-1 bg-black/30 rounded text-gray-400 break-all">
+                            (auto-detected)
+                        </div>
+                    </div>
+
+                    <div class="flex gap-2">
+                        <button id="startServerBtn"
+                                class="flex-1 px-3 py-2 bg-emerald-600/80 hover:bg-emerald-600 text-white text-xs font-medium rounded-xl transition-all active:scale-[0.97]">
+                            Start Server
+                        </button>
+                        <button id="stopServerBtn"
+                                class="flex-1 px-3 py-2 bg-red-500/20 hover:bg-red-500/30 text-red-300 text-xs font-medium rounded-xl transition-all active:scale-[0.97]">
+                            Stop
+                        </button>
+                        <button id="refreshServerStatusBtn"
+                                class="px-3 py-2 bg-surface-light hover:bg-surface-hover text-gray-300 text-xs font-medium rounded-xl transition-all">
+                            ↻
+                        </button>
+                    </div>
+                    <div class="text-[10px] text-gray-600 mt-1.5">
+                        Uses your local <span class="font-mono">llama-server</span> binary + selected model.
+                    </div>
+                </div>
+
+                <!-- Voice / TTS Server (Qwen3-TTS VoiceDesign) — Experimental in RC -->
+                <div class="pt-4 border-t border-gray-700/40">
+                    <div class="flex items-center justify-between mb-2">
+                        <div>
+                            <span class="text-xs font-medium text-gray-400">Voice / TTS Server</span>
+                            <span class="ml-1 text-[10px] text-amber-500/90 font-medium">Experimental</span>
+                        </div>
+                        <span id="voiceServerStatusBadge" class="text-[10px] px-2 py-0.5 rounded bg-gray-700 text-gray-400">Not running</span>
+                    </div>
+
+                    <div class="mb-2">
+                        <label class="block text-[10px] text-gray-400 mb-1">TTS Model (for reference)</label>
+                        <input type="text" id="ttsModelPathInput" 
+                               value="test-models/qwen3-tts-12hz-0.6b-customvoice-q8_0.gguf"
+                               class="w-full bg-surface-light border border-gray-600/50 rounded-lg px-3 py-1.5 text-xs text-white font-mono">
+                    </div>
+
+                    <div class="mb-2">
+                        <label class="block text-[10px] text-gray-400 mb-1">TTS Endpoint (llama-server for voice)</label>
+                        <input type="text" id="ttsEndpointInput" 
+                               value="http://localhost:8081/v1/audio/speech"
+                               placeholder="http://localhost:8081/v1/audio/speech"
+                               class="w-full bg-surface-light border border-gray-600/50 rounded-lg px-3 py-1.5 text-xs text-white font-mono">
+                    </div>
+
+                    <div class="flex gap-2">
+                        <button id="startVoiceServerBtn"
+                                class="flex-1 px-3 py-2 bg-violet-600/80 hover:bg-violet-600 text-white text-xs font-medium rounded-xl transition-all">
+                            Start Voice Server
+                        </button>
+                        <button id="stopVoiceServerBtn"
+                                class="flex-1 px-3 py-2 bg-red-500/20 hover:bg-red-500/30 text-red-300 text-xs font-medium rounded-xl transition-all">
+                            Stop
+                        </button>
+                    </div>
+                    <div class="text-[10px] text-gray-500 mt-1.5">
+                        For character voice synthesis using the Qwen3-TTS model (experimental).
+                    </div>
+                </div>
+
+                <div id="connectionTestResult" class="text-xs text-center hidden"></div>
+
+                <!-- 10/10 Diagnostics Access -->
+                <div class="pt-4 border-t border-gray-700/40">
+                    <button id="openDiagnosticsBtn"
+                            class="w-full px-4 py-2.5 bg-surface-light hover:bg-surface-hover border border-gray-600/50 rounded-xl text-sm font-medium flex items-center justify-center gap-2 transition-all">
+                        <i data-lucide="activity" class="w-4 h-4"></i>
+                        <span>Open Diagnostics & Health</span>
+                    </button>
+                    <div class="text-[10px] text-gray-500 text-center mt-1">Server states, Arena history, memory, forensics</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- About Modal -->
+    <div id="aboutModal" class="fixed inset-0 z-[80] flex items-center justify-center p-4 hidden">
+        <div class="absolute inset-0 bg-black/70 backdrop-blur-sm" id="aboutOverlay"></div>
+        <div class="relative bg-surface rounded-2xl border border-gray-700/50 w-full max-w-2xl p-6 shadow-2xl">
+            <div class="flex items-start justify-between mb-3">
+                <div>
+                    <h2 class="text-2xl font-semibold tracking-tight">LocalPersona</h2>
+                    <p class="text-gray-400 text-sm">One-click local GGUF persona &amp; character studio</p>
+                </div>
+                <div id="aboutVersionBadge" 
+                     class="text-[10px] font-mono px-2.5 py-1 bg-surface-light rounded-lg text-gray-400 border border-gray-700/50 self-start mt-0.5">
+                    v0.0.0
+                </div>
+            </div>
+
+            <div id="aboutContent" 
+                 class="md-content bg-[#141426] border border-gray-700/40 rounded-xl p-4 overflow-auto max-h-[440px] text-[13px] leading-relaxed text-gray-200 mb-4">
+                <!-- Populated dynamically via get_readme_content + simple renderer -->
+            </div>
+
+            <div class="flex items-center gap-2">
+                <button id="viewSourceBtn"
+                        class="px-3 py-2 text-xs bg-surface-light hover:bg-surface-hover text-gray-200 font-medium rounded-lg transition-all flex items-center gap-1.5">
+                    <i data-lucide="github" class="w-3.5 h-3.5"></i>
+                    <span>View Source</span>
+                </button>
+                <button id="reportIssueBtn"
+                        class="px-3 py-2 text-xs bg-surface-light hover:bg-surface-hover text-gray-200 font-medium rounded-lg transition-all flex items-center gap-1.5">
+                    <i data-lucide="bug" class="w-3.5 h-3.5"></i>
+                    <span>Report Issue</span>
+                </button>
+                <div class="flex-1"></div>
+                <button id="closeAboutBtn" 
+                        class="px-4 py-2 text-sm bg-accent hover:bg-accent/80 text-white font-medium rounded-xl transition-all">
+                    Close
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Diagnostics Modal (Professional observability - 10/10 plan) -->
+    <div id="diagnosticsModal" class="fixed inset-0 z-[80] flex items-center justify-center p-4 hidden">
+        <div class="absolute inset-0 bg-black/70 backdrop-blur-sm" id="diagnosticsOverlay"></div>
+        <div class="relative bg-surface rounded-2xl border border-gray-700/50 w-full max-w-2xl max-h-[85vh] overflow-y-auto p-6 shadow-2xl">
+            <div class="flex items-center justify-between mb-4">
+                <div class="flex items-center gap-3">
+                    <i data-lucide="activity" class="w-6 h-6 text-accent"></i>
+                    <h2 class="text-xl font-semibold">Diagnostics & Health</h2>
+                </div>
+                <button id="closeDiagnosticsBtn" class="p-2 rounded-lg hover:bg-surface-hover transition-colors">
+                    <i data-lucide="x" class="w-5 h-5"></i>
+                </button>
+            </div>
+
+            <div id="diagnosticsContent" class="space-y-4 text-sm">
+                <div class="text-gray-400">Loading diagnostics...</div>
+            </div>
+
+            <div class="mt-6 text-[10px] text-gray-500">
+                Data comes from the Rust forensic layer (circuit breaker, memory monitor, server managers).
+            </div>
+        </div>
+    </div>
+
+    <!-- Help Modal (dedicated in-app window, replaces external file open) -->
+    <div id="helpModal" class="fixed inset-0 z-[80] flex items-center justify-center p-4 hidden">
+        <div class="absolute inset-0 bg-black/70 backdrop-blur-sm" id="helpOverlay"></div>
+        <div class="relative bg-surface rounded-2xl border border-gray-700/50 w-full max-w-3xl p-6 shadow-2xl">
+            <div class="flex items-center justify-between mb-3">
+                <div class="flex items-center gap-2">
+                    <i data-lucide="help-circle" class="w-5 h-5 text-accent"></i>
+                    <h2 class="text-xl font-semibold">Help &amp; User Manual</h2>
+                </div>
+                <button id="closeHelpBtn" 
+                        class="text-gray-400 hover:text-white p-1 rounded hover:bg-surface-light transition-colors">
+                    <i data-lucide="x" class="w-5 h-5"></i>
+                </button>
+            </div>
+
+            <div id="helpContent" 
+                 class="md-content bg-[#141426] border border-gray-700/40 rounded-xl p-4 overflow-auto max-h-[520px] text-[13px] leading-relaxed text-gray-200">
+                <!-- Populated dynamically via get_user_manual_content + simple renderer -->
+            </div>
+
+            <div class="mt-3 text-[10px] text-gray-500 text-right">
+                Content sourced from bundled USER_MANUAL.md • Everything runs 100% offline
+            </div>
+        </div>
+    </div>
+
+    <!-- Confirm Delete Modal -->
+    <div id="confirmDeleteModal" class="fixed inset-0 z-[70] flex items-center justify-center p-4 hidden">
+        <div class="absolute inset-0 bg-black/80 backdrop-blur-sm"></div>
+        <div class="relative bg-surface rounded-2xl border border-gray-700/50 w-full max-w-sm p-6 shadow-2xl animate-scaleIn text-center">
+            <i data-lucide="triangle-alert" class="w-10 h-10 text-red-400 mx-auto mb-3"></i>
+            <h4 class="text-lg font-semibold text-white mb-2">Delete Character?</h4>
+            <p class="text-sm text-gray-400 mb-5">This will also delete all chat history for this character. This action cannot be undone.</p>
+            <div class="flex gap-3">
+                <button id="cancelDeleteBtn" class="flex-1 px-4 py-2.5 bg-surface-light hover:bg-surface-hover text-gray-200 text-sm font-medium rounded-xl transition-all">Cancel</button>
+                <button id="confirmDeleteBtn" class="flex-1 px-4 py-2.5 bg-red-500 hover:bg-red-600 text-white text-sm font-medium rounded-xl transition-all">Delete</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="script.js"></script>
+</body>
+</html>
