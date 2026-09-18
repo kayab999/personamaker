@@ -7,7 +7,7 @@ reading; `P` = pending behavioral confirmation in this slice.
 |---|---|---|---|---|---|---|---|
 | F-001 | S1 — **EN VIVO, fix-before-beta** | CTX-1+2 | inference.rs:379-381, 438-439; commands.rs:597-604; script.js:2969,3324,3849-3852 | L3.2-Rogue on roster → budget 72,089 vs server 8192 (~9×). Crossover ≥ 14,895 (= ⌈8192/0.55⌉; float truncation in code shifts the observable edge to 14,897 — `witness_ctx12_exact_crossover` computes it). Any beta user loading a ≥128k-ctx llama-family model past ~8k history tokens trips it | Budget ≤ server ctx vs live 9× overflow | One ctx source (expose in Settings); reserve-based budget. **Design pinned → PHASE3_SPEC.md (source + reserves + clamp; 0.55 dies; witness inversion; F1 re-run gate). Session must return S1/S2 max_tokens for margin calibration.** | V |
 | F-002 | S1 | CTX-3 | commands.rs:880-881→932-939; conversation.rs:157-163 | No reserves for system/RAG/turn/max_tokens/template; byte/4 estimator undercounts CJK ≥25% structurally | Sum(prompt+completion) ≤ ctx vs 9,548 > 8,192 on fallback path | Reserve-based budget; usage.prompt_tokens recalibration | V |
-| F-004 | S1 | T-4 | commands.rs:36-39 | No `.no_proxy()`; reqwest honors HTTP(S)_PROXY env | Localhost never proxied vs total inference failure + prompt egress on corporate proxy machines | `.no_proxy()` (+ connect timeout ≤10s) | V |
+| F-004 | S1 | T-4 | commands.rs:36-39 | No `.no_proxy()`; reqwest honors HTTP(S)_PROXY env | Localhost never proxied vs total inference failure + prompt egress on corporate proxy machines | `.no_proxy()` (+ connect timeout ≤10s). **Rider pinned → PHASE3_SPEC.md §f (same builder Phase 3 already edits).** | V |
 | F-006 | S1 | T-9 | export/import path | JSON-only round-trip; avatar/voice-sample/knowledge binaries lost | Lossless round-trip vs silent binary loss on migration | Bundle binaries in export archive or explicit loss warning | V |
 | F-003 | S2 | T-5 | inference.rs:1283-1286 | stdout reader breaks at READY; post-ready stdout undrained → 64KB pipe fill → child blocks mid-generation | Drain for process lifetime vs hard hang (narrow trigger: verbose builds) | Don't break; daemon drain thread. Fix now (3 lines) | V |
 | F-005 | S2 | T-14 | — | No single-instance guard | Refuse/focus second launch vs port conflict + split-brain UI (fs2 locks mitigate data corruption) | `tauri-plugin-single-instance` | V |
@@ -27,6 +27,7 @@ reading; `P` = pending behavioral confirmation in this slice.
 | F-020 | S2 (partially open: remote/CI) | Gov | .git/ | **Remediated locally 2026-09-17:** repo + baseline commit dd295a4 + tag `audit-baseline-0.9.0-rc.1` + pre-commit hook verified live. Residual: `tribunal.yml` inert — no remote, no CI; ARCHITECTURE_AND_STATUS §13 P1 "restore git remote" stays open. | Tagged, diffable, hook-enforced tree vs untracked workspace | Remote + CI wiring (open — shared exit with F-014: fast/full split is CI content) | V |
 | F-021 | S3 | Hygiene | build | Dead-code dominant = compiler agreeing with v1 R3 (unconnected `circuit_breaker.rs`/`autopsy.rs` scaffolding, ~465 LOC) → architecture decision: connect them or remove them **and** remove them from §4 architecture claims — no `#[allow]`. 4 mechanical lints APPLIED 2026-09-17 (`map.flatten`→`and_then` rag.rs:29, needless `u64` casts ×2 memory_monitor.rs:200, `sort_by_key` storage.rs:400). `cargo clippy --all-targets`: 71 warnings at triage. | Zero-warning baseline vs slow rot | Connect-or-remove decision for R3 scaffolding (open) | V |
 | F-022 | S2 (Proc) | Session ownership | handoff | Ownership deadlock: Phase 1 bounced "yours" both ways 3×. Benign mode = infinite meta-work ping-pong. Catastrophic mode = a filled-in RESULTS_NOGPU.md with no session behind it — a green RC-gate call built on fiction that no later stage would detect (violates "verify before claiming completeness"). Capability fact: the remote side of this channel cannot launch the GUI, click, observe toasts, or time rows. | Human-on-machine Phase 1 (local agent runs harness commands; human owns GUI actions + observations) vs fabricated evidence | Ownership rule (this row) + Provenance header gate in RESULTS_NOGPU.md: no full header → no consolidation; any row whose referenced file is missing or whose line-count mismatches gets flagged | V |
+| F-023 | S2 | Supply chain | Cargo.lock (cargo audit 2026-09-18, full output in cargo_audit_20260918.txt) | 6 vulns: lopdf 0.34 stack-overflow via nested PDFs (HIGH 7.5, RUSTSEC-2026-0187) — DIRECTLY reachable via pdf-extract knowledge ingest (user uploads PDFs → crash-DoS); h2 0.4.14 empty-DATA-frames (via reqwest, localhost-only at runtime); quick-xml ×2 7.5 (via plist←tauri-BUILD, build-time only); rustls 0.23.40 TLS (medium; HF-fetch path); crossbeam-epoch pointer-deref (Tauri internals). +10 allowed warnings (unmaintained paste/proc-macro-error/unic-*, unsound anyhow/glib — anyhow downcast_mut NOT called in src/tests, yanked der, all transitive). | Pinned-but-vulnerable lockfile vs patched | Targeted `cargo update -p lopdf -p h2 -p quick-xml -p rustls -p crossbeam-epoch` + Tribunal re-run — scheduled WITH Phase-3 (lockfile churn + Tauri pin risk, not in this lot) | V |
 
 **Claims that PASSED verification** (for the claims register — audit honesty cuts
 both ways): redirect `Policy::none` ✓ (verify behaviorally), 120s timeout exists
@@ -40,6 +41,19 @@ pending `cargo tauri dev`).
 The pass-2 python dump (no value-type info) misread the roster as "all fallback";
 the empirical `gguf_roster_probe` (real `read_gguf_metadata`) overruled it within
 minutes. Prefer probes over dumps for any binary-format claim.
+
+**Retry semantics (A2, pinned 2026-09-18, `commands.rs:734-806` +
+`inference.rs:565-620`):** loop ≤2 iterations; transport errors (timeout incl.
+120s hang/drip, refused, mid-body reset) retried exactly once; HTTP non-2xx,
+parse/truncation/shape/empty errors and validation failures NEVER retried;
+auto-restart only when the child demonstrably exited (`try_wait → Some`),
+attempt 0, breaker-guarded, +800ms settle. Per-send POST budget: success 1 ·
+transport-fail ≤2 + ≤1 respawn · app-fail exactly 1. `check_health` returns false
+with no child, so a never-started server never triggers restart.
+**Hygiene greps (2026-09-18):** secrets (`password|api_key|secret` in `src/`) 0
+hits · external-exec surface 3 points (`Command::new` ×2 argv-only spawns,
+`open::that` ×1 http/https-validated) · `TODO|FIXME` 0 in `src/*.rs` +
+`frontend/script.js` · clippy 67 warnings post-4-fixes.
 
 ### Blast table v3 — 2026-09-17 ground truth (supersedes v2)
 

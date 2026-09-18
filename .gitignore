@@ -34,6 +34,7 @@ __pycache__/
 # Audit harness generated files (never commit captures/logs)
 harness/mock_requests.jsonl
 harness/mock_state.json
+scripts/mock_state.json
 harness/captures.jsonl
 harness/soak.csv
 harness/fidelity_out/

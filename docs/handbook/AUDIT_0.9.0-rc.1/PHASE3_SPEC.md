@@ -58,6 +58,13 @@ Once the fix lands, the parser extension (F-008) flips from forbidden to
 **safe and pending** — first commit post-Phase-3, not "someday". The probe
 already holds the mechanism: asserts flip to `budget(file) ≤ server_ctx`.
 
+## f) Networking rider (accepted — same builder Phase 3 already edits)
+
+F-004 `.no_proxy()` + F-012 split connect-timeout (≤10s) land in the HTTP client
+builder alongside the Phase-3 work. Rationale: localhost inference must never
+traverse a corporate proxy (prompt egress, S1), and hang diagnosis needs
+connect-vs-total separation. No separate commit required.
+
 ## Exit gate — Phase 3
 
 - [ ] All tests green with witnesses inverted/renamed (same commit as the fix)

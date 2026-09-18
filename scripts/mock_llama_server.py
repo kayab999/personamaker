@@ -64,8 +64,46 @@ def hitlog(entry):
 # /tokenize (CJK-aware YARDSTICK ONLY — NOT a real tokenizer),
 # full request log (mock_requests.jsonl, never truncated),
 # modes "503", "empty_choices", "wrongshape", MOCK_STDOUT_FLOOD (T-5 probe).
-CTL_STATE = {"mode": "normal", "ready": True}
+# ---- file-backed /ctl state (A1) ----
+# Rationale: the app auto-restarts dead workers (commands.rs:739-755). A respawn
+# re-execs this mock; in-memory-only mode would reset to the CLI default mid-matrix,
+# making the designed retry SUCCEED against the wrong mode — a legitimate append
+# indistinguishable from append-on-failure (false S0 on the highest-severity rows).
+# File state survives respawns, so the retry fails as designed (error, no append).
+# NOTE: CLI --mode seeds the file only on first touch (no state file yet).
+# Afterwards the file wins over CLI — switch modes via mock_ctl.py, or rm the file.
 _CTL_LOCK = threading.Lock()
+
+
+def _state_file():
+    env = os.environ.get("MOCK_STATE")
+    if env:
+        return env
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "mock_state.json")
+
+
+def _save_ctl(state):
+    tmp = _state_file() + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(state, f)
+    os.replace(tmp, _state_file())
+
+
+def _read_ctl():
+    # Per-request load: every request sees post-respawn / post-ctl truth.
+    try:
+        with open(_state_file()) as f:
+            s = json.load(f)
+        if isinstance(s, dict):
+            return {"mode": s.get("mode", "normal"), "ready": s.get("ready", True)}
+    except Exception:
+        pass
+    base = {"mode": getattr(ARGS, "mode", "normal"), "ready": True}
+    try:
+        _save_ctl(base)  # first touch persists the CLI default for later respawns
+    except Exception:
+        pass
+    return base
 
 
 def _ctl_log(body):
@@ -125,7 +163,12 @@ class H(BaseHTTPRequestHandler):
         pass
 
     def _not_ready(self):
-        return ARGS.slowready and (time.monotonic() - START) < ARGS.slowready
+        if ARGS.slowready and (time.monotonic() - START) < ARGS.slowready:
+            return True
+        try:  # ctl-driven readiness (mock_ctl ready/notready) rides the same gate
+            return not _read_ctl().get("ready", True)
+        except Exception:
+            return False
 
     def _send(self, code, body=b"", close=False):
         self.send_response(code)
@@ -147,9 +190,14 @@ class H(BaseHTTPRequestHandler):
         self.close_connection = True
 
     def do_GET(self):
+        if self.path == "/REDIRECT_CANARY":
+            _ctl_log({"ts": round(time.time(), 3), "path": self.path,
+                      "body": {"canary": True, "verdict": "CLIENT FOLLOWED REDIRECT"}})
+            self._send(200, b'{"canary":true,"verdict":"CLIENT FOLLOWED REDIRECT"}')
+            return
         if self.path == "/ctl":
             with _CTL_LOCK:
-                state = dict(CTL_STATE)
+                state = _read_ctl()
             self._send(200, json.dumps(state).encode())
             return
         if self._not_ready():
@@ -182,9 +230,13 @@ class H(BaseHTTPRequestHandler):
                 self._send(400, json.dumps({"error": str(e)}).encode())
                 return
             with _CTL_LOCK:
-                CTL_STATE.update(update)
-                state = dict(CTL_STATE)
+                state = _read_ctl()
+                state.update(update)
+                _save_ctl(state)
             self._send(200, json.dumps(state).encode())
+            return
+        if self.path == "/REDIRECT_CANARY":
+            self._send(200, b'{"canary":true,"verdict":"CLIENT FOLLOWED REDIRECT"}')
             return
         if self.path == "/tokenize":
             try:
@@ -201,15 +253,15 @@ class H(BaseHTTPRequestHandler):
             return
 
         _usage_update(req_body)  # §5.3: usage tracks the actual incoming prompt
-        m = ARGS.mode
         with _CTL_LOCK:
-            if CTL_STATE.get("mode", "normal") != "normal":
-                m = CTL_STATE["mode"]
+            m = _read_ctl().get("mode", "normal")
         hitlog({"mode": m, "path": self.path, "req_bytes": n})
 
         if m == "redirect":
+            # Canary (A3): relative Location keeps a following client on THIS mock.
+            # Any hit to /REDIRECT_CANARY in the request log = follow = S0-security.
             self.send_response(302)
-            self.send_header("Location", ARGS.redirect_url)
+            self.send_header("Location", "/REDIRECT_CANARY")
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
@@ -334,7 +386,8 @@ def main():
             "wrongshape",
         ],
     )
-    p.add_argument("--redirect-url", default="http://127.0.0.1:8099/v1/chat/completions")
+    p.add_argument("--redirect-url", default="http://127.0.0.1:8099/v1/chat/completions",
+                   help="DEPRECATED: redirect mode now serves relative /REDIRECT_CANARY (A3)")
     p.add_argument("--slowready", type=int, default=0, help="seconds of 503 on /health + /v1/models before ready")
     p.add_argument("--bind-delay", type=int, default=0, help="seconds before the port even opens (cold model-load sim)")
     p.add_argument("--drip-secs", type=float, default=1.0, help="seconds per byte in drip mode")

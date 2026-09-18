@@ -31,15 +31,21 @@ Start server in-app → mock_ctl.py <port> show must answer.
 | normal          | appends; request logged; sampling fields as set               | —    |
 | malformed/wrongshape/empty_choices | clean parse error, NO append, next send ok   | S0   |
 | empty/whitespace/nullcontent | explicit empty-content rejection, NO append         | S0 (§11.2 claim) |
-| 500 / 503       | surfaced error, no append, retry ok                           | S1   |
-| drip            | error within ≤120s (timeout verified commands.rs:36-39)       | >120s = S0 |
-| hang            | error within ≤120s (record actual duration → F-012 evidence)  | >120s = S0 |
-| redirect        | clean error, NO follow (Policy::none verified — confirm)      | follow = S0-sec |
+| 500 / 503 / ctx400 | surfaced error, NO append, exactly 1 POST (HTTP status never retried), next send ok | S1   |
+| drip            | error within ≤300s total (≤2×120s timeout + respawn + readiness; record actual duration) | >300s or unbounded = HARD ROW |
+| hang            | error within ≤300s total (record actual duration → F-012 evidence; note input responsive?) | >300s or unbounded = HARD ROW |
+| redirect        | clean error, NO follow — grep mock_requests.jsonl for /REDIRECT_CANARY hit (=follow=S0-sec) | follow = S0-sec |
 | length          | truncation marker VISIBLE in UI (post-hoc :834-835)           | silent = S2 |
 | big             | bounded handling, UI responsive                               | S2   |
-| reset           | clean error, no append                                        | S1   |
+| reset           | clean error, no append (transport cut → ≤2 POSTs, retry once) | S1   |
 | notready→ready  | readiness gating; measure the 15s timeout → F-010 evidence    | —    |
 After each row: mock_ctl.py <port> normal.
+POST oracle (retry semantics pinned: loop ≤2 iters commands.rs:734; transport errors
+retried once :797-803; HTTP-status/parse/content errors never retried :808-833;
+auto-restart only on dead child, attempt 0, breaker-guarded :739/inference.rs:601):
+success = 1 POST · transport-fail (drip/hang/reset/refused) = ≤2 POSTs + ≤1 respawn
+(new PID, same port) · app-fail (4xx/5xx/parse/empty) = exactly 1 POST, no respawn.
+>2 POSTs per send = finding (retry-budget anomaly, prima de D2).
 
 ## 4c. F-001 live repro (no GPU)
 seed_long_history.py (§2.1 → harness/seed_long_history.py) -> ndjson_check clean ->

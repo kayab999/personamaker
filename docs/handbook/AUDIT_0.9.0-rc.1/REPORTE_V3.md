@@ -76,7 +76,7 @@ Toast no-intrusivo en todo error IPC (`callTauri` throw + toast); `isGenerating`
 
 ## 13. Dependencias externas — ⚠️ (2 findings vivos)
 
-llama-server BYO sin versionado mínimo (F-011 S2: `--version` probe + línea en INSTALL pendientes). fastembed descarga HF en primer uso (F-009 S2: fail-closed verificado en código, evidencia conductual T-1 pendiente, secuencia bloqueado→abierto en runbook). Timeouts: total 120s sí, connect dedicado no (F-012). `Cargo.lock` commiteado; `cargo audit` nunca ejecutado → hueco registrado (no invento veredicto supply-chain).
+llama-server BYO sin versionado mínimo (F-011 S2: `--version` probe + línea en INSTALL pendientes). fastembed descarga HF en primer uso (F-009 S2: fail-closed verificado en código, evidencia conductual T-1 pendiente, secuencia bloqueado→abierto en runbook). Timeouts: total 120s sí, connect dedicado no (F-012, rider aceptado en PHASE3_SPEC §f). `Cargo.lock` commiteado; `cargo audit` ejecutado 2026-09-18 → **F-023** (6 vulns: lopdf HIGH alcanzable vía ingesta PDF, resto transitivo/build-time; upgrades calendarizados con Phase-3). `cargo machete` no ejecutado (instalación no trivial; diferido, anotado).
 
 ## 14. Regresión & contratos — ✅ (con F-014 residual)
 
@@ -167,7 +167,7 @@ Tratamientos: todo local-first. Riesgo significativo único: egress accidental v
 
 ## 🟠 Importantes (pre-release / sesión)
 
-F-002 (reservas, mismo lote F-001) · F-006 (binarios en export) · F-007 (clamp-ctx) · F-003 (drain, fix-ya 3 líneas) · F-009 (fastembed: evidencia T-1 en sesión) · F-010/F-012 (readiness/timeouts) · F-011 (min-version) · F-013 (clamp-feedback) · QA-6/AI-1..4 (Tier-2) · soak 8h · T-8 smoke `.deb` · A11Y smoke · PERF-1 baseline · `cargo audit` · cancel-mid-generation · ENOSPC.
+F-002 (reservas, mismo lote F-001) · F-006 (binarios en export) · F-007 (clamp-ctx) · F-003 (drain, fix-ya 3 líneas) · F-009 (fastembed: evidencia T-1 en sesión) · F-010/F-012 (readiness/timeouts) · F-011 (min-version) · F-013 (clamp-feedback) · QA-6/AI-1..4 (Tier-2) · soak 8h · T-8 smoke `.deb` · A11Y smoke · PERF-1 baseline · F-023 supply-chain upgrades (con Phase-3) · cancel-mid-generation · ENOSPC.
 
 ## 🟡 Deseables (roadmap)
 
