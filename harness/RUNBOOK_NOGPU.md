@@ -47,6 +47,22 @@ success = 1 POST · transport-fail (drip/hang/reset/refused) = ≤2 POSTs + ≤1
 (new PID, same port) · app-fail (4xx/5xx/parse/empty) = exactly 1 POST, no respawn.
 >2 POSTs per send = finding (retry-budget anomaly, prima de D2).
 
+Per-mode calibration (no longer derivable by the operator mid-session — pinned here):
+| Mode | App error class | POSTs | Respawn | Verdict |
+|---|---|---|---|---|
+| normal | — (success) | 1 | 0 | append + markers |
+| 500 / 503 / ctx400 | HTTP status → no retry | 1 | 0 | clean error, no append |
+| malformed / empty / whitespace / nullcontent / empty_choices / wrongshape | parse/content → no retry | 1 | 0 | explicit rejection, no append |
+| length / big | success (marker / volume) | 1 | 0 | marker visible / UI responsive |
+| hang / drip | timeout → transport → retry | ≤2 | 0 (child alive) | total ≤~300s; record real duration |
+| reset | cut body → probable transport | 1 or 2 (record which) | 0 | either valid; >2 = finding |
+| redirect | policy-denied → unpinned classification | 1 or 2 (record which) | 0 | verdict = canary: hit = S0-sec; no hit + no append = pass |
+Transversal rules: respawn >0 on ANY C-matrix row = finding (spurious restart on a
+live child — contradicts inference.rs:601-620). >2 POSTs/send = finding.
+The two ambiguous cells are features, not gaps: what `reset`/`redirect` record
+reveals how the classifier treats `IncompleteMessage` and policy-denied — direct
+input to the F-004/F-012 rider in Phase 3. Log it in RESULTS even on pass.
+
 ## 4c. F-001 live repro (no GPU)
 seed_long_history.py (§2.1 → harness/seed_long_history.py) -> ndjson_check clean ->
 Settings model=L3.2-Rogue, server=harness/fake_llama_server.sh -> select character,

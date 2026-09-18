@@ -20,7 +20,8 @@ append-on-failure · redirect-follow · hang >120s · B4 "concatenated"
 1. RESULTS + procedencia   2. fila dura   3. cambio explícito de plan
 
 ## Índice de artefactos
-FINDINGS_REGISTER.md (F-001..F-022 + passed-claims) · CTX_FINDINGS.md ·
-PHASE3_SPEC.md · RUNBOOK_NOGPU.md (§1–8, §4c, pre-flight card) · RESULTS_NOGPU.md
-(template + provenance) · MODEL_MANIFEST.md · harness/ (kit + self-test) ·
-tests/ctx_budget_property.rs · tests/gguf_roster_probe.rs
+FINDINGS_REGISTER.md (F-001..F-023 + passed-claims) · CTX_FINDINGS.md ·
+PHASE3_SPEC.md · REPORTE_V3.md (auditoría integral v3.0: core + 7 variants + veredicto) ·
+RUNBOOK_NOGPU.md (§1–8, §4c, pre-flight card) · RESULTS_NOGPU.md
+(template + provenance) · MODEL_MANIFEST.md · cargo_audit_20260918.txt ·
+harness/ (kit + self-test) · tests/ctx_budget_property.rs · tests/gguf_roster_probe.rs

@@ -26,6 +26,7 @@ POST oracle: success=1 · transport-fail ≤2 POSTs + ≤1 respawn · app-fail e
 | big | UI responsive? | | | 1 | | — | | C7 |
 | notready→ready | readiness behavior; 15s observed ___ | | | — | | — | | T-6 |
 Per wait-row: input responsive during wait? (responsive -> F-012 stays S2; frozen -> S1)
+Classifier note (record even on pass — feeds the F-004/F-012 Phase-3 rider): reset POSTs = 1 or 2? ___ ; redirect POSTs = 1 or 2? ___
 
 ## §4c F-001 live repro (no GPU — Rogue is an ACTIVE trigger, F-001 EN VIVO)
 seed: `seed_long_history.py --appdata DIR --learn-from DIR/conversations/<tpl> --character <id>`

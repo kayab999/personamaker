@@ -6,24 +6,30 @@ set -euo pipefail
 PORT="${1:-18796}"
 DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 MOCK="$DIR/../scripts/mock_llama_server.py"
-STATE="$DIR/../scripts/mock_state.json"
+# Isolation (hygiene): all mock-generated state lands in a tmpdir — never the repo.
+# Kills the "restore mock_hits.jsonl by hand before every commit" class for good.
+TMP="$(mktemp -d)"
+export MOCK_STATE="$TMP/mock_state.json"
+export MOCK_LOG="$TMP/mock_hits.jsonl"
 PIDS=""
 cleanup() {
   # shellcheck disable=SC2086
   for p in $PIDS; do kill -9 "$p" 2>/dev/null || true; done
-  rm -f "$STATE" mock_requests.jsonl
+  rm -rf "$TMP"
 }
 trap cleanup EXIT
-rm -f "$STATE" mock_requests.jsonl
 
-python3 "$MOCK" --port "$PORT" --mode normal >/tmp/mock_a1.log 2>&1 &
+# Mock CWD = tmpdir so mock_requests.jsonl never touches the repo either.
+launch_mock() { (cd "$TMP" && exec python3 "$MOCK" --port "$PORT" --mode normal "$@"); }
+
+launch_mock >/tmp/mock_a1.log 2>&1 &
 PIDS="$PIDS $!"
 sleep 1.5
 python3 "$DIR/mock_ctl.py" "$PORT" ctx400 | grep -q ctx400 || { echo "FAIL: ctl set"; exit 1; }
 echo "ok: mode set to ctx400"
 
 kill -9 $! 2>/dev/null; sleep 1.0   # hard kill, like an app worker death
-python3 "$MOCK" --port "$PORT" --mode normal >/tmp/mock_a1b.log 2>&1 &
+launch_mock >/tmp/mock_a1b.log 2>&1 &
 PIDS="$PIDS $!"
 sleep 1.5
 MODE=$(python3 "$DIR/mock_ctl.py" "$PORT" show)
