@@ -21,6 +21,11 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install Tauri Linux dependencies (gtk/webkit for -sys crates)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
       - name: Cache cargo registry
         uses: actions/cache@v4
         with:
@@ -48,6 +53,11 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install Tauri Linux dependencies (gtk/webkit for -sys crates)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -74,6 +84,11 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install Tauri Linux dependencies (gtk/webkit for -sys crates)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -96,6 +111,11 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Tauri Linux dependencies (gtk/webkit for -sys crates)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -124,6 +144,11 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+
+      - name: Install Tauri Linux dependencies (gtk/webkit for -sys crates)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -155,6 +180,11 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Tauri Linux dependencies (gtk/webkit for -sys crates)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -207,6 +237,11 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install Tauri Linux dependencies (gtk/webkit for -sys crates)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
 
@@ -230,6 +265,11 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Tauri Linux dependencies (gtk/webkit for -sys crates)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
         with:
           components: llvm-tools-preview
 
@@ -280,8 +320,10 @@ jobs:
           CSP=$(python3 -c "import json;print(json.load(open('tauri.conf.json'))['app']['security']['csp'])")
           echo "CSP: $CSP"
           echo "$CSP" | grep -q "script-src 'self'" || (echo "⚠️ script-src must be 'self' only" && exit 1)
-          case "$CSP" in
-            *script-src*unsafe-inline*) echo "⚠️ script-src must not contain unsafe-inline" && exit 1;;
+          SCRIPT_SRC=$(echo "$CSP" | tr ';' '\n' | grep -E "^\s*script-src")
+          echo "script-src directive: $SCRIPT_SRC"
+          case "$SCRIPT_SRC" in
+            *unsafe-inline*) echo "⚠️ script-src must not contain unsafe-inline" && exit 1;;
           esac
           case "$CSP" in
             *base-uri*|*object-src*|*form-action*) echo "✅ CSP has base-uri/object-src/form-action";;
