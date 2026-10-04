@@ -265,13 +265,13 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
 
       - name: Install Tauri Linux dependencies (gtk/webkit for -sys crates)
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
-        with:
-          components: llvm-tools-preview
 
       - name: Install cargo-llvm-cov
         run: cargo install cargo-llvm-cov --locked
