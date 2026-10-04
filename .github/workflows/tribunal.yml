@@ -260,11 +260,10 @@ jobs:
           --ignore RUSTSEC-2026-0195
           --ignore RUSTSEC-2026-0194
 
-  # ==================== Coverage (informational, P1.5) ====================
+  # ==================== Coverage (blocking floor, sweep W2) ====================
   coverage:
-    name: Coverage Report (informational)
+    name: Coverage Floor
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -281,11 +280,10 @@ jobs:
       - name: Install cargo-llvm-cov
         run: cargo install cargo-llvm-cov --locked
 
-      - name: Coverage (storage, conversation, commands)
-        run: cargo llvm-cov --lib --tests --lcov --output-path lcov.info
-
-      - name: Coverage summary
-        run: cargo llvm-cov --lib --tests --summary-only
+      - name: Coverage floor (measured 31.5% lines on 2026-10-04; raise, never lower)
+        # NOTE: aspirational per-module bars (80/70%) did not match reality;
+        # this floor ratchets the honest total upward instead.
+        run: cargo llvm-cov --lib --tests --fail-under-lines 30 --summary-only
 
   # ==================== Frontend Checks ====================
   frontend:
@@ -349,11 +347,26 @@ jobs:
           fi
           echo "✅ no inline handlers"
 
+  # ==================== Frontend Tests (node, sweep W2) ====================
+  frontend-tests:
+    name: Frontend Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Run frontend smoke suite (XSS properties, zero deps)
+        run: node --test "frontend/tests/*.test.js"
+
   # ==================== Tribunal Verdict ====================
   verdict:
     name: Tribunal Verdict
     runs-on: ubuntu-latest
-    needs: [build, test, proptest, autopsy, clippy, security, audit, frontend]
+    needs: [build, test, proptest, autopsy, clippy, security, audit, coverage, frontend, frontend-tests]
     steps:
       - name: All checks passed
         run: |
@@ -363,11 +376,13 @@ jobs:
           echo "║ ✅ Build:        PASS                    ║"
           echo "║ ✅ Unit Tests:   PASS                    ║"
           echo "║ ✅ Property Tests: PASS                  ║"
-           echo "║ ✅ AutopsyDump:  VERIFIED                ║"
+          echo "║ ✅ AutopsyDump:  VERIFIED                ║"
           echo "║ ✅ Clippy:       PASS                    ║"
           echo "║ ✅ Security:     PASS                    ║"
           echo "║ ✅ Audit:        PASS                    ║"
+          echo "║ ✅ Coverage:     PASS                    ║"
           echo "║ ✅ Frontend:     PASS                    ║"
+          echo "║ ✅ FrontendTests:PASS                    ║"
           echo "╠══════════════════════════════════════════╣"
           echo "║ Blast Radius: 0                          ║"
           echo "║ Sovereign Scaling: VERIFIED              ║"

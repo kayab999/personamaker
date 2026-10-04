@@ -2494,3 +2494,34 @@ mod identity_contract_tests {
         assert!(err.contains("Cannot resolve character"), "unexpected: {err}");
     }
 }
+
+#[cfg(test)]
+mod sweep_w2_security_tests {
+    use super::*;
+
+    #[test]
+    fn host_header_pins_loopback() {
+        assert_eq!(
+            endpoint_host_header("http://127.0.0.1:8080/v1/chat/completions"),
+            "127.0.0.1:8080"
+        );
+        assert_eq!(
+            endpoint_host_header("http://localhost:8081/v1/audio/speech"),
+            "localhost:8081"
+        );
+        assert_eq!(
+            endpoint_host_header("http://[::1]:8080/v1/models"),
+            "[::1]:8080"
+        );
+    }
+
+    #[test]
+    fn host_header_falls_back_on_evil_input() {
+        // DNS-rebinding style input must never be reflected into Host.
+        assert_eq!(
+            endpoint_host_header("http://evil.example.com/v1/chat/completions"),
+            "127.0.0.1"
+        );
+        assert_eq!(endpoint_host_header("not a url"), "127.0.0.1");
+    }
+}

@@ -1226,3 +1226,30 @@ mod tests {
         assert_eq!(out["createdAt"], 1700000000000u64);
     }
 }
+
+#[cfg(test)]
+mod sweep_w2_sanitizer_tests {
+    use super::sanitize_avatar_color;
+
+    #[test]
+    fn avatar_color_allowlist() {
+        assert_eq!(sanitize_avatar_color("#7c3aed"), "#7c3aed");
+        assert_eq!(sanitize_avatar_color("#ABCDEF"), "#ABCDEF");
+        assert_eq!(sanitize_avatar_color("  #123456  "), "#123456");
+    }
+
+    #[test]
+    fn avatar_color_rejects_injection() {
+        // CSS/style-breakout payloads normalize to the default.
+        assert_eq!(
+            sanitize_avatar_color("red;}</style><script>alert(1)</script>"),
+            "#7c3aed"
+        );
+        assert_eq!(sanitize_avatar_color("#fff"), "#7c3aed");
+        assert_eq!(sanitize_avatar_color(""), "#7c3aed");
+        assert_eq!(
+            sanitize_avatar_color("#7c3aed\" onload=\"evil()"),
+            "#7c3aed"
+        );
+    }
+}

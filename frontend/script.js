@@ -331,7 +331,7 @@ function renderImagePreviews() {
         const thumb = document.createElement('div');
         thumb.className = 'relative flex-shrink-0 w-12 h-12 rounded-lg overflow-hidden border border-gray-600 bg-surface-light';
         thumb.innerHTML = `
-            <img src="${escapeHtml(resolveMediaSrc(img.path) || img.previewUrl || '')}" class="w-full h-full object-cover" data-img-fallback="strip-clear">
+            <img src="${escapeHtmlAttr(resolveMediaSrc(img.path) || img.previewUrl || '')}" class="w-full h-full object-cover" data-img-fallback="strip-clear">
             <button class="absolute -top-1 -right-1 w-5 h-5 bg-red-500 text-white rounded-full text-[10px] flex items-center justify-center">×</button>
             <div class="absolute bottom-0 left-0 right-0 bg-black/60 text-[8px] px-1 truncate">${escapeHtml(img.name)}</div>
         `;
@@ -520,10 +520,10 @@ function renderCharacterList() {
             if (char.avatarUrl.startsWith('avatars/')) {
                 // Backend-stored path → render with placeholder, resolve later
                 avatarHtml = `
-                    <img src="" data-needs-avatar-resolve="true" data-avatar-path="${escapeHtml(char.avatarUrl)}" alt="" class="w-full h-full object-cover rounded-xl" data-avatar-fallback="sibling" loading="lazy">
+                    <img src="" data-needs-avatar-resolve="true" data-avatar-path="${escapeHtmlAttr(char.avatarUrl)}" alt="" class="w-full h-full object-cover rounded-xl" data-avatar-fallback="sibling" loading="lazy">
                     <span class="w-full h-full rounded-xl flex items-center justify-center text-sm font-bold text-white" style="background:${sanitizeAvatarColor(char.avatarColor)};display:none;">${escapeHtml(initials)}</span>`;
             } else {
-                avatarHtml = `<img src="${escapeHtml(char.avatarUrl)}" alt="" class="w-full h-full object-cover rounded-xl" data-avatar-fallback="sibling" loading="lazy"><span class="w-full h-full rounded-xl flex items-center justify-center text-sm font-bold text-white" style="background:${sanitizeAvatarColor(char.avatarColor)};display:none;">${escapeHtml(initials)}</span>`;
+                avatarHtml = `<img src="${escapeHtmlAttr(char.avatarUrl)}" alt="" class="w-full h-full object-cover rounded-xl" data-avatar-fallback="sibling" loading="lazy"><span class="w-full h-full rounded-xl flex items-center justify-center text-sm font-bold text-white" style="background:${sanitizeAvatarColor(char.avatarColor)};display:none;">${escapeHtml(initials)}</span>`;
             }
         } else {
             avatarHtml = `<span class="w-full h-full rounded-xl flex items-center justify-center text-sm font-bold text-white" style="background:${sanitizeAvatarColor(char.avatarColor)};">${escapeHtml(initials)}</span>`;
@@ -625,10 +625,10 @@ function renderQuickSwitchCards() {
         if (char.avatarUrl) {
             if (char.avatarUrl.startsWith('avatars/')) {
                 avatarHtml = `
-                    <img src="" data-needs-avatar-resolve="true" data-avatar-path="${escapeHtml(char.avatarUrl)}" alt="" class="w-full h-full object-cover" data-avatar-fallback="sibling" loading="lazy">
+                    <img src="" data-needs-avatar-resolve="true" data-avatar-path="${escapeHtmlAttr(char.avatarUrl)}" alt="" class="w-full h-full object-cover" data-avatar-fallback="sibling" loading="lazy">
                     <span class="w-full h-full flex items-center justify-center text-[10px] font-bold text-white" style="background:${sanitizeAvatarColor(char.avatarColor)};display:none;">${escapeHtml(initials)}</span>`;
             } else {
-                avatarHtml = `<img src="${escapeHtml(char.avatarUrl)}" alt="" class="w-full h-full object-cover" data-avatar-fallback="sibling" loading="lazy"><span class="w-full h-full flex items-center justify-center text-[10px] font-bold text-white" style="background:${sanitizeAvatarColor(char.avatarColor)};display:none;">${escapeHtml(initials)}</span>`;
+                avatarHtml = `<img src="${escapeHtmlAttr(char.avatarUrl)}" alt="" class="w-full h-full object-cover" data-avatar-fallback="sibling" loading="lazy"><span class="w-full h-full flex items-center justify-center text-[10px] font-bold text-white" style="background:${sanitizeAvatarColor(char.avatarColor)};display:none;">${escapeHtml(initials)}</span>`;
             }
         } else {
             avatarHtml = `<span class="w-full h-full flex items-center justify-center text-[10px] font-bold text-white" style="background:${sanitizeAvatarColor(char.avatarColor)};">${escapeHtml(initials)}</span>`;
@@ -774,7 +774,7 @@ function renderSingleMessage(msg, character) {
                 </div>
                 <div class="max-w-[78%] bg-[#1f2c34] text-gray-100 rounded-2xl rounded-tl-md px-3.5 py-2 shadow-sm">
                     <p class="text-[14.5px] leading-snug whitespace-pre-wrap">${formatMessageContent(msg.content)}</p>
-                    <span class="block text-[10px] text-gray-400 mt-1">${msg.speaker_name || character.name} · ${time}</span>
+                    <span class="block text-[10px] text-gray-400 mt-1">${escapeHtml(msg.speaker_name || character.name)} · ${time}</span>
                 </div>
             </div>`;
     }
@@ -846,9 +846,9 @@ function renderMessages(history, character) {
     if (history.length === 0) {
         let greetingAvatar = '';
         if (character.avatarUrl && character.avatarUrl.startsWith('avatars/')) {
-            greetingAvatar = `<img src="" data-needs-avatar-resolve="true" data-avatar-path="${escapeHtml(character.avatarUrl)}" alt="" class="w-full h-full object-cover rounded-full" data-avatar-fallback="parent-text" data-fallback-text="${escapeHtmlAttr(initials)}" loading="lazy">`;
+            greetingAvatar = `<img src="" data-needs-avatar-resolve="true" data-avatar-path="${escapeHtmlAttr(character.avatarUrl)}" alt="" class="w-full h-full object-cover rounded-full" data-avatar-fallback="parent-text" data-fallback-text="${escapeHtmlAttr(initials)}" loading="lazy">`;
         } else if (character.avatarUrl) {
-            greetingAvatar = `<img src="${escapeHtml(character.avatarUrl)}" alt="" class="w-full h-full object-cover rounded-full" data-avatar-fallback="parent-text" data-fallback-text="${escapeHtmlAttr(initials)}" loading="lazy">`;
+            greetingAvatar = `<img src="${escapeHtmlAttr(character.avatarUrl)}" alt="" class="w-full h-full object-cover rounded-full" data-avatar-fallback="parent-text" data-fallback-text="${escapeHtmlAttr(initials)}" loading="lazy">`;
         } else {
             greetingAvatar = `<span class="text-xs font-bold text-white">${escapeHtml(initials)}</span>`;
         }
@@ -886,9 +886,9 @@ function renderMessages(history, character) {
                 <div class="flex items-start gap-3 animate-fadeIn message-group" data-message-index="${index}">
                     <div class="w-8 h-8 rounded-full flex-shrink-0 overflow-hidden shadow-md flex items-center justify-center" style="background:${sanitizeAvatarColor(character.avatarColor)};">
                         ${character.avatarUrl && character.avatarUrl.startsWith('avatars/')
-                            ? `<img src="" data-needs-avatar-resolve="true" data-avatar-path="${escapeHtml(character.avatarUrl)}" alt="" class="w-full h-full object-cover rounded-full" data-avatar-fallback="parent-text" data-fallback-text="${escapeHtmlAttr(initials)}" loading="lazy">`
+                            ? `<img src="" data-needs-avatar-resolve="true" data-avatar-path="${escapeHtmlAttr(character.avatarUrl)}" alt="" class="w-full h-full object-cover rounded-full" data-avatar-fallback="parent-text" data-fallback-text="${escapeHtmlAttr(initials)}" loading="lazy">`
                             : character.avatarUrl
-                                ? `<img src="${escapeHtml(character.avatarUrl)}" alt="" class="w-full h-full object-cover rounded-full" data-avatar-fallback="parent-text" data-fallback-text="${escapeHtmlAttr(initials)}" loading="lazy">`
+                                ? `<img src="${escapeHtmlAttr(character.avatarUrl)}" alt="" class="w-full h-full object-cover rounded-full" data-avatar-fallback="parent-text" data-fallback-text="${escapeHtmlAttr(initials)}" loading="lazy">`
                                 : `<span class="text-xs font-bold text-white">${escapeHtml(initials)}</span>`}
                     </div>
                     <div class="bg-chat-ai rounded-2xl rounded-tl-md px-4 py-3 max-w-[80%] shadow-sm relative">
@@ -926,9 +926,9 @@ function renderMessages(history, character) {
                 <div class="flex items-start gap-3 animate-fadeIn message-group" data-message-index="${index}">
                     <div class="w-8 h-8 rounded-full flex-shrink-0 overflow-hidden shadow-md flex items-center justify-center" style="background:${sanitizeAvatarColor(character.avatarColor)};">
                         ${character.avatarUrl && character.avatarUrl.startsWith('avatars/')
-                            ? `<img src="" data-needs-avatar-resolve="true" data-avatar-path="${escapeHtml(character.avatarUrl)}" alt="" class="w-full h-full object-cover rounded-full" data-avatar-fallback="parent-text" data-fallback-text="${escapeHtmlAttr(initials)}" loading="lazy">`
+                            ? `<img src="" data-needs-avatar-resolve="true" data-avatar-path="${escapeHtmlAttr(character.avatarUrl)}" alt="" class="w-full h-full object-cover rounded-full" data-avatar-fallback="parent-text" data-fallback-text="${escapeHtmlAttr(initials)}" loading="lazy">`
                             : character.avatarUrl
-                                ? `<img src="${escapeHtml(character.avatarUrl)}" alt="" class="w-full h-full object-cover rounded-full" data-avatar-fallback="parent-text" data-fallback-text="${escapeHtmlAttr(initials)}" loading="lazy">`
+                                ? `<img src="${escapeHtmlAttr(character.avatarUrl)}" alt="" class="w-full h-full object-cover rounded-full" data-avatar-fallback="parent-text" data-fallback-text="${escapeHtmlAttr(initials)}" loading="lazy">`
                                 : `<span class="text-xs font-bold text-white">${escapeHtml(initials)}</span>`}
                     </div>
                     <div class="bg-chat-ai rounded-2xl rounded-tl-md px-4 py-3 max-w-[80%] shadow-sm relative">
@@ -970,8 +970,8 @@ function renderMessageImages(images) {
     images.forEach(img => {
         if (!img.path) return;
         const cached = resolveMediaSrc(img.path);
-        const pathAttr = escapeHtml(img.path);
-        html += `<img src="${escapeHtml(cached)}" data-media-path="${pathAttr}" alt="Attached image" class="max-w-full rounded-lg">`;
+        const pathAttr = escapeHtmlAttr(img.path);
+        html += `<img src="${escapeHtmlAttr(cached)}" data-media-path="${pathAttr}" alt="Attached image" class="max-w-full rounded-lg">`;
         if (!cached) resolveMediaSrcAsync(img.path);
     });
     html += '</div>';
