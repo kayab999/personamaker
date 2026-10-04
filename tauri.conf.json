@@ -29,7 +29,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["appimage", "deb"],
+    "targets": ["deb"],
     "publisher": "LocalPersona",
     "copyright": "Copyright (c) LocalPersona Contributors. MIT License.",
     "category": "Utility",

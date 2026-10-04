@@ -38,7 +38,12 @@ cd /tmp/localpersona-build && cargo tauri build --bundles deb
 
 If AppImage still fails, ship the **`.deb`** (primary) plus **AppDir tarball** / bare binary from `dist/`.
 
-Targets in `tauri.conf.json`: **AppImage + deb** (AppImage optional if tooling allows).
+Targets in `tauri.conf.json`: **deb only** (sweep decision 2026-10-04: no
+maintainer environment currently produces a working AppImage — no
+linuxdeploy, space-containing paths break it, and `dist/` ships no
+.AppImage. `scripts/package-release.sh` keeps a best-effort AppImage attempt
+for machines with proper tooling; the portable fallbacks are the **AppDir
+tarball** and the **bare binary**).
 
 ## Dock / menu launcher
 

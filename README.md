@@ -48,7 +48,7 @@ LocalPersona is on an **RC-stable track** after a ground-truth re-audit (2026-07
 **Installable:** Linux `.deb` (~14 MB) under `dist/0.9.0-rc.1/` — no models included.  
 **RC maturity:** ~8.7–9.0; closed beta after human soak; not GA.
 
-**Known RC limitations:** message edit deferred; streaming UI frozen off; voice/TTS experimental; AR/social out of scope; AppImage may fail if `linuxdeploy`/path issues (use `.deb`).
+**Known RC limitations:** message edit deferred; streaming UI frozen off; voice/TTS experimental; AR/social out of scope; `.deb` is the ship vehicle (AppImage dropped from default targets — see packaging docs).
 
 **Release notes:** [RELEASE_NOTES](docs/handbook/RELEASE_NOTES_0.9.0-rc.1.md) · [CHANGELOG](CHANGELOG.md) · [RC checklist](docs/handbook/RC_ACCEPTANCE_CHECKLIST.md) · [Blueprint](docs/handbook/ARCHITECTURE_AND_STATUS.md)
 
@@ -68,7 +68,7 @@ cargo tauri dev
 # Quality gate
 ./scripts/tribunal.sh
 
-# Production installers (Linux AppImage + deb) → dist/<version>/
+# Production installer (Linux .deb) → dist/<version>/
 ./scripts/package-release.sh
 ```
 
@@ -81,7 +81,7 @@ See [docs/packaging/PACKAGING.md](docs/packaging/PACKAGING.md) and [docs/packagi
 ### Current focus
 
 - Human RC acceptance matrix + soak ([checklist](docs/handbook/RC_ACCEPTANCE_CHECKLIST.md))
-- Post-RC: real streaming, message edit, AppImage on space-free build paths
+- Post-RC: real streaming, message edit
 
 See [ARCHITECTURE_AND_STATUS.md](docs/handbook/ARCHITECTURE_AND_STATUS.md) and [AGENTS.md](AGENTS.md).
 

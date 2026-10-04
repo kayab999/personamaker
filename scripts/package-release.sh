@@ -93,6 +93,9 @@ cp -v LICENSE "$OUT_DIR/" 2>/dev/null || true
   sha256sum * > CHECKSUMS.txt 2>/dev/null || true
 )
 
+# Sweep W3: optional provenance signature (non-fatal without keys).
+"$REPO_ROOT/scripts/sign-release.sh" "$OUT_DIR" || true
+
 echo ""
 echo "✅ Packaging complete → $OUT_DIR"
 ls -lah "$OUT_DIR" || true

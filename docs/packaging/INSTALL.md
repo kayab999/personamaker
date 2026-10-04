@@ -2,7 +2,7 @@
 
 ## What you need
 
-1. This package (AppImage or `.deb`)
+1. This package (`.deb`, AppDir tarball, or portable binary)
 2. A **llama-server** binary from [llama.cpp](https://github.com/ggerganov/llama.cpp)
 3. One or more **`.gguf`** model files on disk
 
@@ -10,16 +10,7 @@ Models are **not** included in the installer.
 
 ---
 
-## Linux — AppImage (recommended for testers)
-
-```bash
-chmod +x LocalPersona_*.AppImage
-./LocalPersona_*.AppImage
-```
-
-If your system blocks unprivileged user namespaces, install the `.deb` instead or run with your distro’s AppImage runtime docs.
-
-## Linux — Debian / Ubuntu (`.deb`)
+## Linux — Debian / Ubuntu (`.deb`, recommended)
 
 ```bash
 sudo dpkg -i LocalPersona_*.deb
