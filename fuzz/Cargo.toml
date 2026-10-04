@@ -24,3 +24,9 @@ name = "ndjson_parse"
 path = "fuzz_targets/ndjson_parse.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "pdf_ingest"
+path = "fuzz_targets/pdf_ingest.rs"
+test = false
+doc = false

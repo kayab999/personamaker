@@ -835,26 +835,133 @@ pub fn process_character_document(
     Ok(chunks.len())
 }
 
-fn extract_text_from_pdf(path: &Path) -> Result<String, String> {
-    // P0-3: isolate panics from malformed PDFs (pure-Rust parsers panic on hostile input).
-    // With panic="unwind" this catch prevents one bad upload from killing the app
-    // and skipping Drop cleanup for llama-server.
-    // M06: Use pdf-extract for real PDF text extraction
-    let bytes = std::fs::read(path).map_err(|e| format!("Failed to read PDF file: {}", e))?;
+/// Sweep W1: PDF text extraction runs in a disposable child process, never in
+/// the app process. Rationale: RUSTSEC-2026-0187 (lopdf stack overflow via
+/// deeply nested objects) is NOT unwindable — catch_unwind cannot save us.
+/// A crashing/hanging child yields an error; the parent (and llama-server
+/// Drop cleanup) always survives.
+///
+/// The worker is this same binary invoked as `--extract-pdf <path>` (see
+/// main.rs); override via LOCALPERSONA_PDF_WORKER_BIN (tests point it at
+/// CARGO_BIN_EXE_localpersona since the test harness binary has no handler).
+/// `pub` + doc(hidden) follows the read_pid_file_with_nonce precedent: needed
+/// by tests/pdf_isolation.rs, not part of the IPC surface.
+#[doc(hidden)]
+pub fn extract_text_from_pdf(path: &Path) -> Result<String, String> {
+    // Cheap pre-checks before paying a process spawn.
+    let meta = std::fs::metadata(path).map_err(|e| format!("Failed to read PDF file: {}", e))?;
+    const MAX_PDF_BYTES: u64 = 200 * 1024 * 1024;
+    if meta.len() > MAX_PDF_BYTES {
+        return Err(format!(
+            "PDF too large ({} bytes, max {}): refusing to parse",
+            meta.len(),
+            MAX_PDF_BYTES
+        ));
+    }
+
+    let worker = std::env::var_os("LOCALPERSONA_PDF_WORKER_BIN")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::current_exe().unwrap_or_else(|_| PathBuf::from("localpersona"))
+        });
+
+    let mut child = std::process::Command::new(&worker)
+        .arg("--extract-pdf")
+        .arg(path)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to spawn PDF worker: {}", e))?;
+
+    // Bounded wait: poll try_wait so a stack-overflow hang can't wedge us.
+    const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+    const OUTPUT_CAP: usize = 32 * 1024 * 1024;
+    let start = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait().map_err(|e| format!("PDF worker wait failed: {}", e))? {
+            Some(s) => break s,
+            None => {
+                if start.elapsed() > TIMEOUT {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err("PDF parsing timed out (likely hostile file); document rejected safely".to_string());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+        }
+    };
+
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("Failed to collect PDF worker output: {}", e))?;
+    if output.stdout.len() > OUTPUT_CAP {
+        return Err("PDF extracted text exceeds sane bounds; document rejected safely".to_string());
+    }
+    if !status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr);
+        let detail = detail.trim().chars().take(300).collect::<String>();
+        return Err(format!(
+            "PDF worker rejected the document (exit {}): {}",
+            status.code().unwrap_or(-1),
+            if detail.is_empty() {
+                "malformed or hostile file"
+            } else {
+                &detail
+            }
+        ));
+    }
+    let text = String::from_utf8_lossy(&output.stdout).into_owned();
+    if text.trim().is_empty() {
+        Err("PDF contains no extractable text (may be a scanned document or image-based PDF)".to_string())
+    } else {
+        Ok(text)
+    }
+}
+
+/// Worker entry point for `--extract-pdf <path>`: runs inside the disposable
+/// child only. Never called in-process on untrusted bytes by the parent.
+pub fn run_pdf_worker(path: &Path) -> ! {
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("Failed to read PDF file: {}", e);
+            std::process::exit(1);
+        }
+    };
+    // Belt and suspenders: Rust-level panics become exit 2 (parent maps any
+    // non-zero exit to rejection; true stack exhaustion dies by signal).
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         pdf_extract::extract_text_from_mem(&bytes)
     }));
     match result {
-        Err(_) => Err("PDF parsing panicked (likely malformed file); document rejected safely".to_string()),
-        Ok(Err(e)) => Err(format!("Failed to extract text from PDF: {}", e)),
+        Err(_) => {
+            eprintln!("PDF parsing panicked (likely malformed file)");
+            std::process::exit(2);
+        }
+        Ok(Err(e)) => {
+            eprintln!("Failed to extract text from PDF: {}", e);
+            std::process::exit(1);
+        }
         Ok(Ok(text)) => {
-            if text.trim().is_empty() {
-                Err("PDF contains no extractable text (may be a scanned document or image-based PDF)".to_string())
-            } else {
-                Ok(text)
-            }
+            use std::io::Write as _;
+            let stdout = std::io::stdout();
+            let mut lock = stdout.lock();
+            // Best effort: a broken pipe (parent timed out) is fine.
+            let _ = lock.write_all(text.as_bytes());
+            let _ = lock.flush();
+            std::process::exit(0);
         }
     }
+}
+
+/// Fuzz entry for the exact worker-side parse (same code the child runs).
+/// `pub` + doc(hidden) so the fuzz crate can reach it; never fed untrusted
+/// bytes in-process by the app itself.
+#[doc(hidden)]
+pub fn pdf_fuzz_entry(data: &[u8]) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        pdf_extract::extract_text_from_mem(data)
+    }));
 }
 
 /// Simple but effective chunking for RAG.

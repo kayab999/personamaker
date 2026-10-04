@@ -23,6 +23,23 @@ use crate::inference::LlamaServerManager;
 
 #[tokio::main]
 async fn main() {
+    // Sweep W1: disposable PDF worker entry. Must run before ANY Tauri/GUI
+    // init so a hostile file can never wedge the app process (see
+    // storage::extract_text_from_pdf which spawns us per document).
+    {
+        let mut args = std::env::args_os();
+        let _exe = args.next();
+        if args.next().as_deref() == Some(std::ffi::OsStr::new("--extract-pdf")) {
+            match args.next() {
+                Some(p) => storage::run_pdf_worker(std::path::Path::new(&p)),
+                None => {
+                    eprintln!("--extract-pdf requires a file path");
+                    std::process::exit(1);
+                }
+            }
+        }
+    }
+
     env_logger::init();
 
     // Phase 12.0: Install structured crash dump hook
