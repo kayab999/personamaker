@@ -29,9 +29,20 @@ Packaging
 • Linux .deb ~14MB in dist/0.9.0-rc.1/; package via scripts/package-release.sh.
 • Brand icons in icons/; master in docs/branding/.
 
-Governance: ./scripts/tribunal.sh = cargo check + destructive_tests + property_tests.
+Governance: ./scripts/tribunal.sh (check + destructive + property) + CI Tribunal v12 (11 jobs incl. audit/deny/coverage/frontend) required on main.
 
-Status: closed-beta RC readiness ~8.7–9.0; human soak/matrix still open. Post-RC: streaming, edit, AR vision stays frozen.
+Status: closed-beta RC. No numeric maturity scores by policy — readiness is
+measured, not asserted (see table below). Human soak/matrix still open.
+Post-RC: streaming, edit, AR vision stays frozen.
+
+| Criterion (2026-10-04) | State |
+|---|---|
+| Tribunal CI verdict | GREEN (all jobs incl. coverage floor 30%, audit, deny) |
+| Test matrix | 140+ passing, 0 failing (Rust) + 6 frontend smoke |
+| Production unwrap() | 0 (ratchet-gated) |
+| Open audit findings | High: 0 · Med: E2E-browser deferred · Low: tracked in sweep docs |
+| Known unmitigated vulns | 3 accepted-risk ignores in audit.toml (no upstream fix) |
+| Human soak / acceptance matrix | OPEN |
 
 Do not: add test-models to bundle.resources; dual-write chat history; reintroduce speaker_id=user as character lookup.
 ```
@@ -104,7 +115,7 @@ voice_samples/ (legacy location)
 | File storage + RAG      | `src/storage.rs`                     | Characters, avatars, documents, chunking |
 | Inference (LLM + Voice) | `src/inference.rs`                   | `VoiceServerManager`, server lifecycle |
 | Data models             | `src/models.rs`                      | `StoredCharacter`, etc. |
-| Frontend (single file)  | `frontend/script.js`                 | ~2000+ LOC vanilla JS UI (messenger evolution in progress) |
+| Frontend (single file)  | `frontend/script.js`                 | ~3900 LOC vanilla JS UI (no-split policy; tested via frontend/tests/smoke) |
 | Styling                 | `frontend/style.css`                 | Tailwind via CDN |
 
 ### Development Commands
@@ -132,7 +143,7 @@ cargo check
 
 ### Current Technical Priorities (as of latest context)
 
-From the latest v7.2-style re-audit + long-context slice, the highest-leverage remaining items for reaching true top score (9.5+) are:
+From the latest v7.2-style re-audit + long-context slice, the highest-leverage remaining items are:
 
 1. **Long-context maturity** (biggest remaining usability gap) — Token-budget loading is implemented and wired (`load_messages_within_token_budget`, 8192 default). Next: read real model `context_length` from GGUF metadata, smarter truncation (keep system + recent turns), basic summarization for very long histories, and UI exposure of current usage.
 2. **Full Blast Radius validation** — Complete the hardest remaining chaos tests (true partial/truncated HTTP responses during generation + clean recovery + conversation integrity after mid-request worker SIGKILL).
@@ -214,7 +225,7 @@ Remaining direct writes are only inside the atomic helpers themselves or low-ris
 
 ---
 
-## Latest Critical Fixes (Phase 0 Stabilization - July 2025)
+## Earlier: Phase 0 Stabilization (July 2025, predates the May 2026 work above)
 
 In the most recent stabilization pass, the following high-impact reliability and correctness issues were addressed:
 
@@ -275,10 +286,9 @@ These changes directly address the most severe "Critical" items from the latest 
 The project is now in a significantly stronger position for limited beta / public testing.
 
 **Next recommended steps after this batch:**
-- Fix the RAG compilation errors so the project builds cleanly.
 - Consider adding a lightweight per-conversation `Mutex` for the ndjson append path (lower priority now that metadata is atomic).
 - Gradually migrate remaining `alert()` calls to the new `showToast()`.
 
-**Documentation Status (2026-07-25):** Canonical dump is **`docs/handbook/ARCHITECTURE_AND_STATUS.md`**. Index: **`docs/README.md`**. Older AUDIT/remediation docs are historical. Packaging: Linux deb without models. Maturity ~8.7–9.0 RC, not the outdated 9.2–9.3 claim.
+**Documentation Status (2026-10-04):** Canonical dump is **`docs/handbook/ARCHITECTURE_AND_STATUS.md`**. Index: **`docs/README.md`**. Older AUDIT/remediation docs are historical. Packaging: Linux deb without models. No maturity scores — see the criteria table in the Quick Context block.
 
-*Last synced: 2026-07-25 (RC packaging + doc consolidation)*
+*Last synced: 2026-10-04 (full sweep: PDF isolation, dep trims, coverage/frontend gates, deny+SBOM, archetype personas, AppImage decision)*
