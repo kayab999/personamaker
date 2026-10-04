@@ -108,8 +108,7 @@ async fn main() {
 
                                                 // Copy default avatar image if it exists
                                                 if let Some(avatar_url) = persona.get("avatarUrl").and_then(|v| v.as_str()) {
-                                                    if avatar_url.starts_with("avatars/default/") {
-                                                        let filename = avatar_url.strip_prefix("avatars/default/").unwrap();
+                                                    if let Some(filename) = avatar_url.strip_prefix("avatars/default/") {
                                                         let src = default_avatars_dir.join(filename);
                                                         let dest = avatars_dir.join(filename);
                                                         if src.exists() {
@@ -166,12 +165,6 @@ async fn main() {
                     }
                 }
             });
-
-            #[cfg(debug_assertions)]
-            {
-                // let window = app.get_webview_window("main").unwrap();
-                // window.open_devtools();
-            }
 
             Ok(())
         })

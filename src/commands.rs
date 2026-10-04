@@ -1092,7 +1092,7 @@ fn retrieve_knowledge_for_character(app: &tauri::AppHandle, character_id: &str, 
     if let Ok(entries) = std::fs::read_dir(knowledge_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("json") && path.file_name().unwrap().to_string_lossy().contains(".chunks.json") {
+            if path.extension().and_then(|e| e.to_str()) == Some("json") && path.file_name().and_then(|n| n.to_str()).is_some_and(|s| s.contains(".chunks.json")) {
                 if let Ok(content) = std::fs::read_to_string(&path) {
                     if let Ok(chunks) = serde_json::from_str::<Vec<storage::KnowledgeChunk>>(&content) {
                         all_chunks.extend(chunks);

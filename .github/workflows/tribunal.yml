@@ -205,16 +205,16 @@ jobs:
 
       - name: Check for unwrap() in production code
         run: |
-          # Ratchet (not an absolute bar): the old ">10 fails" threshold never
-          # matched reality (44 at last count, CI never compiled to enforce it).
-          # Fail only on growth above the pinned baseline; drive the number down
-          # over time and lower BASELINE accordingly. Follow-up: replace hot-path
-          # unwraps (conversation/storage load) with explicit error returns.
-          BASELINE=44
-          COUNT=$(grep -rn "\.unwrap()" src/ --include="*.rs" | grep -v "#\[test\]" | grep -v "test_" | grep -v "Regex::new" | wc -l)
+          # Accurate ratchet via scripts/count_unwraps.py, which excludes
+          # #[cfg(test)] modules and static Regex::new (the old grep counted
+          # 41 test-only unwraps as production). Baseline is now 0 — any new
+          # production unwrap() fails the gate; use explicit error returns.
+          BASELINE=0
+          COUNT=$(python3 scripts/count_unwraps.py --quiet)
           echo "Found $COUNT unwrap() calls in production code (baseline $BASELINE)"
           if [ "$COUNT" -gt "$BASELINE" ]; then
-            echo "⚠️ unwrap() count grew past baseline — refactor new sites to return errors"
+            echo "⚠️ new production unwrap() — refactor to return errors"
+            python3 scripts/count_unwraps.py
             exit 1
           fi
 
