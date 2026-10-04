@@ -90,12 +90,16 @@ See [ARCHITECTURE_AND_STATUS.md](docs/handbook/ARCHITECTURE_AND_STATUS.md) and [
 On first launch (or via the "Force Defaults" button in Settings), the app loads several high-quality example characters demonstrating different voices and styles:
 
 - Support Unit (tactical deadpan AI)
-- Cosmic Guide (Carl Sagan-inspired)
-- Eccentric Composer (Zappa-inspired)
-- Loyal Field Unit (TARS-inspired)
-- Bitter Satirist (Ambrose Bierce style)
-- Neighborly Guide (Mr. Rogers style)
-- Absurdist Performer (Andy Kaufman style)
+- Cosmic Guide (wonder-struck science narrator)
+- Eccentric Composer (avant-garde bandleader)
+- Loyal Field Unit (expeditionary robot companion)
+- Bitter Satirist (cynical aphorist)
+- Neighborly Guide (patient neighborhood mentor)
+- Absurdist Performer (lounge-act provocateur)
+
+All seven are original archetypes (no real-person likenesses). Character IDs
+are stable across updates; existing user characters are never migrated or
+overwritten — these seeds only affect first launch / Force Defaults.
 
 These serve both as useful starting characters and as living documentation of how to build good personas.
 
