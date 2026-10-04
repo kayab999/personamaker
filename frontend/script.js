@@ -331,7 +331,7 @@ function renderImagePreviews() {
         const thumb = document.createElement('div');
         thumb.className = 'relative flex-shrink-0 w-12 h-12 rounded-lg overflow-hidden border border-gray-600 bg-surface-light';
         thumb.innerHTML = `
-            <img src="${escapeHtml(resolveMediaSrc(img.path) || img.previewUrl || '')}" class="w-full h-full object-cover" onerror="this.src='';this.classList.add('bg-gray-700')">
+            <img src="${escapeHtml(resolveMediaSrc(img.path) || img.previewUrl || '')}" class="w-full h-full object-cover" data-img-fallback="strip-clear">
             <button class="absolute -top-1 -right-1 w-5 h-5 bg-red-500 text-white rounded-full text-[10px] flex items-center justify-center">×</button>
             <div class="absolute bottom-0 left-0 right-0 bg-black/60 text-[8px] px-1 truncate">${escapeHtml(img.name)}</div>
         `;
@@ -356,6 +356,8 @@ function clearPendingImages() {
 
 // --- INITIALIZATION ---
 async function initApp() {
+    // P0-2: install CSP-compatible image fallback delegation before any render.
+    try { installImageFallbackHandler(); } catch (e) { console.warn('img fallback init failed', e); }
     // Critical chrome first: Settings/menu must work even if IPC/disk load fails.
     try {
         setupEventListeners();
@@ -518,13 +520,13 @@ function renderCharacterList() {
             if (char.avatarUrl.startsWith('avatars/')) {
                 // Backend-stored path → render with placeholder, resolve later
                 avatarHtml = `
-                    <img src="" data-needs-avatar-resolve="true" data-avatar-path="${escapeHtml(char.avatarUrl)}" alt="" class="w-full h-full object-cover rounded-xl" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';" loading="lazy">
-                    <span class="w-full h-full rounded-xl flex items-center justify-center text-sm font-bold text-white" style="background:${char.avatarColor};display:none;">${escapeHtml(initials)}</span>`;
+                    <img src="" data-needs-avatar-resolve="true" data-avatar-path="${escapeHtml(char.avatarUrl)}" alt="" class="w-full h-full object-cover rounded-xl" data-avatar-fallback="sibling" loading="lazy">
+                    <span class="w-full h-full rounded-xl flex items-center justify-center text-sm font-bold text-white" style="background:${sanitizeAvatarColor(char.avatarColor)};display:none;">${escapeHtml(initials)}</span>`;
             } else {
-                avatarHtml = `<img src="${escapeHtml(char.avatarUrl)}" alt="" class="w-full h-full object-cover rounded-xl" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';" loading="lazy"><span class="w-full h-full rounded-xl flex items-center justify-center text-sm font-bold text-white" style="background:${char.avatarColor};display:none;">${escapeHtml(initials)}</span>`;
+                avatarHtml = `<img src="${escapeHtml(char.avatarUrl)}" alt="" class="w-full h-full object-cover rounded-xl" data-avatar-fallback="sibling" loading="lazy"><span class="w-full h-full rounded-xl flex items-center justify-center text-sm font-bold text-white" style="background:${sanitizeAvatarColor(char.avatarColor)};display:none;">${escapeHtml(initials)}</span>`;
             }
         } else {
-            avatarHtml = `<span class="w-full h-full rounded-xl flex items-center justify-center text-sm font-bold text-white" style="background:${char.avatarColor};">${initials}</span>`;
+            avatarHtml = `<span class="w-full h-full rounded-xl flex items-center justify-center text-sm font-bold text-white" style="background:${sanitizeAvatarColor(char.avatarColor)};">${escapeHtml(initials)}</span>`;
         }
 
         // Look up real conversation data for this character
@@ -623,13 +625,13 @@ function renderQuickSwitchCards() {
         if (char.avatarUrl) {
             if (char.avatarUrl.startsWith('avatars/')) {
                 avatarHtml = `
-                    <img src="" data-needs-avatar-resolve="true" data-avatar-path="${escapeHtml(char.avatarUrl)}" alt="" class="w-full h-full object-cover" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';" loading="lazy">
-                    <span class="w-full h-full flex items-center justify-center text-[10px] font-bold text-white" style="background:${char.avatarColor};display:none;">${escapeHtml(initials)}</span>`;
+                    <img src="" data-needs-avatar-resolve="true" data-avatar-path="${escapeHtml(char.avatarUrl)}" alt="" class="w-full h-full object-cover" data-avatar-fallback="sibling" loading="lazy">
+                    <span class="w-full h-full flex items-center justify-center text-[10px] font-bold text-white" style="background:${sanitizeAvatarColor(char.avatarColor)};display:none;">${escapeHtml(initials)}</span>`;
             } else {
-                avatarHtml = `<img src="${escapeHtml(char.avatarUrl)}" alt="" class="w-full h-full object-cover" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';" loading="lazy"><span class="w-full h-full flex items-center justify-center text-[10px] font-bold text-white" style="background:${char.avatarColor};display:none;">${escapeHtml(initials)}</span>`;
+                avatarHtml = `<img src="${escapeHtml(char.avatarUrl)}" alt="" class="w-full h-full object-cover" data-avatar-fallback="sibling" loading="lazy"><span class="w-full h-full flex items-center justify-center text-[10px] font-bold text-white" style="background:${sanitizeAvatarColor(char.avatarColor)};display:none;">${escapeHtml(initials)}</span>`;
             }
         } else {
-            avatarHtml = `<span class="w-full h-full flex items-center justify-center text-[10px] font-bold text-white" style="background:${char.avatarColor};">${initials}</span>`;
+            avatarHtml = `<span class="w-full h-full flex items-center justify-center text-[10px] font-bold text-white" style="background:${sanitizeAvatarColor(char.avatarColor)};">${escapeHtml(initials)}</span>`;
         }
 
         return `
@@ -767,8 +769,8 @@ function renderSingleMessage(msg, character) {
         // WhatsApp-style left bubble (AI)
         return `
             <div class="flex items-start gap-2 animate-fadeIn message-group" data-message-id="${msg.id}">
-                <div class="w-7 h-7 rounded-full flex-shrink-0 overflow-hidden mt-0.5" style="background:${character.avatarColor};">
-                    <span class="w-full h-full flex items-center justify-center text-[10px] font-bold text-white">${initials}</span>
+                <div class="w-7 h-7 rounded-full flex-shrink-0 overflow-hidden mt-0.5" style="background:${sanitizeAvatarColor(character.avatarColor)};">
+                    <span class="w-full h-full flex items-center justify-center text-[10px] font-bold text-white">${escapeHtml(initials)}</span>
                 </div>
                 <div class="max-w-[78%] bg-[#1f2c34] text-gray-100 rounded-2xl rounded-tl-md px-3.5 py-2 shadow-sm">
                     <p class="text-[14.5px] leading-snug whitespace-pre-wrap">${formatMessageContent(msg.content)}</p>
@@ -844,16 +846,16 @@ function renderMessages(history, character) {
     if (history.length === 0) {
         let greetingAvatar = '';
         if (character.avatarUrl && character.avatarUrl.startsWith('avatars/')) {
-            greetingAvatar = `<img src="" data-needs-avatar-resolve="true" data-avatar-path="${escapeHtml(character.avatarUrl)}" alt="" class="w-full h-full object-cover rounded-full" onerror="this.style.display='none';this.parentElement.textContent='${escapeHtml(initials)}';" loading="lazy">`;
+            greetingAvatar = `<img src="" data-needs-avatar-resolve="true" data-avatar-path="${escapeHtml(character.avatarUrl)}" alt="" class="w-full h-full object-cover rounded-full" data-avatar-fallback="parent-text" data-fallback-text="${escapeHtmlAttr(initials)}" loading="lazy">`;
         } else if (character.avatarUrl) {
-            greetingAvatar = `<img src="${escapeHtml(character.avatarUrl)}" alt="" class="w-full h-full object-cover rounded-full" onerror="this.style.display='none';this.parentElement.textContent='${escapeHtml(initials)}';" loading="lazy">`;
+            greetingAvatar = `<img src="${escapeHtml(character.avatarUrl)}" alt="" class="w-full h-full object-cover rounded-full" data-avatar-fallback="parent-text" data-fallback-text="${escapeHtmlAttr(initials)}" loading="lazy">`;
         } else {
-            greetingAvatar = `<span class="text-xs font-bold text-white">${initials}</span>`;
+            greetingAvatar = `<span class="text-xs font-bold text-white">${escapeHtml(initials)}</span>`;
         }
 
         container.innerHTML = `
             <div class="flex items-start gap-3 animate-fadeIn message-group">
-                <div class="w-8 h-8 rounded-full flex-shrink-0 overflow-hidden shadow-md flex items-center justify-center" style="background:${character.avatarColor};">
+                <div class="w-8 h-8 rounded-full flex-shrink-0 overflow-hidden shadow-md flex items-center justify-center" style="background:${sanitizeAvatarColor(character.avatarColor)};">
                     ${greetingAvatar}
                 </div>
                 <div class="bg-chat-ai rounded-2xl rounded-tl-md px-4 py-3 max-w-[80%] shadow-sm">
@@ -882,12 +884,12 @@ function renderMessages(history, character) {
         if (voice === 'bot' && msg.role === 'assistant') {
             return `
                 <div class="flex items-start gap-3 animate-fadeIn message-group" data-message-index="${index}">
-                    <div class="w-8 h-8 rounded-full flex-shrink-0 overflow-hidden shadow-md flex items-center justify-center" style="background:${character.avatarColor};">
+                    <div class="w-8 h-8 rounded-full flex-shrink-0 overflow-hidden shadow-md flex items-center justify-center" style="background:${sanitizeAvatarColor(character.avatarColor)};">
                         ${character.avatarUrl && character.avatarUrl.startsWith('avatars/')
-                            ? `<img src="" data-needs-avatar-resolve="true" data-avatar-path="${escapeHtml(character.avatarUrl)}" alt="" class="w-full h-full object-cover rounded-full" onerror="this.style.display='none';this.parentElement.textContent='${escapeHtml(initials)}';" loading="lazy">`
+                            ? `<img src="" data-needs-avatar-resolve="true" data-avatar-path="${escapeHtml(character.avatarUrl)}" alt="" class="w-full h-full object-cover rounded-full" data-avatar-fallback="parent-text" data-fallback-text="${escapeHtmlAttr(initials)}" loading="lazy">`
                             : character.avatarUrl
-                                ? `<img src="${escapeHtml(character.avatarUrl)}" alt="" class="w-full h-full object-cover rounded-full" onerror="this.style.display='none';this.parentElement.textContent='${escapeHtml(initials)}';" loading="lazy">`
-                                : `<span class="text-xs font-bold text-white">${initials}</span>`}
+                                ? `<img src="${escapeHtml(character.avatarUrl)}" alt="" class="w-full h-full object-cover rounded-full" data-avatar-fallback="parent-text" data-fallback-text="${escapeHtmlAttr(initials)}" loading="lazy">`
+                                : `<span class="text-xs font-bold text-white">${escapeHtml(initials)}</span>`}
                     </div>
                     <div class="bg-chat-ai rounded-2xl rounded-tl-md px-4 py-3 max-w-[80%] shadow-sm relative">
                         <p class="text-sm text-gray-200 message-content whitespace-pre-wrap">${formatMessageContent(msg.content)}</p>
@@ -922,12 +924,12 @@ function renderMessages(history, character) {
         } else {
             return `
                 <div class="flex items-start gap-3 animate-fadeIn message-group" data-message-index="${index}">
-                    <div class="w-8 h-8 rounded-full flex-shrink-0 overflow-hidden shadow-md flex items-center justify-center" style="background:${character.avatarColor};">
+                    <div class="w-8 h-8 rounded-full flex-shrink-0 overflow-hidden shadow-md flex items-center justify-center" style="background:${sanitizeAvatarColor(character.avatarColor)};">
                         ${character.avatarUrl && character.avatarUrl.startsWith('avatars/')
-                            ? `<img src="" data-needs-avatar-resolve="true" data-avatar-path="${escapeHtml(character.avatarUrl)}" alt="" class="w-full h-full object-cover rounded-full" onerror="this.style.display='none';this.parentElement.textContent='${escapeHtml(initials)}';" loading="lazy">`
+                            ? `<img src="" data-needs-avatar-resolve="true" data-avatar-path="${escapeHtml(character.avatarUrl)}" alt="" class="w-full h-full object-cover rounded-full" data-avatar-fallback="parent-text" data-fallback-text="${escapeHtmlAttr(initials)}" loading="lazy">`
                             : character.avatarUrl
-                                ? `<img src="${escapeHtml(character.avatarUrl)}" alt="" class="w-full h-full object-cover rounded-full" onerror="this.style.display='none';this.parentElement.textContent='${escapeHtml(initials)}';" loading="lazy">`
-                                : `<span class="text-xs font-bold text-white">${initials}</span>`}
+                                ? `<img src="${escapeHtml(character.avatarUrl)}" alt="" class="w-full h-full object-cover rounded-full" data-avatar-fallback="parent-text" data-fallback-text="${escapeHtmlAttr(initials)}" loading="lazy">`
+                                : `<span class="text-xs font-bold text-white">${escapeHtml(initials)}</span>`}
                     </div>
                     <div class="bg-chat-ai rounded-2xl rounded-tl-md px-4 py-3 max-w-[80%] shadow-sm relative">
                         <p class="text-sm text-gray-200 message-content whitespace-pre-wrap">${formatMessageContent(msg.content)}</p>
@@ -1040,6 +1042,42 @@ function escapeHtml(str) {
     const div = document.createElement('div');
     div.textContent = str;
     return div.innerHTML;
+}
+
+// P0-2 hardening: allowlist for avatar colors (prevents CSS/style injection via imported characters).
+function sanitizeAvatarColor(color) {
+    if (typeof color === 'string' && /^#[0-9a-fA-F]{6}$/.test(color)) return color;
+    return '#7c3aed';
+}
+
+// P0-2 hardening: attribute-safe escaping (escapeHtml does not escape single quotes).
+function escapeHtmlAttr(str) {
+    return escapeHtml(String(str ?? '')).replace(/'/g, '&#39;').replace(/"/g, '&quot;');
+}
+
+// P0-2 hardening: delegated image-error handling (replaces all inline handlers).
+// Works under strict CSP (no 'unsafe-inline' in script-src). Modes:
+// - data-img-fallback="strip-clear": clear src + add bg class (preview thumbnails)
+// - data-avatar-fallback="sibling": hide img, show next sibling fallback span
+// - data-avatar-fallback="parent-text": hide img, set parent textContent safely (no inline JS)
+function installImageFallbackHandler() {
+    if (window.__lpImgFallbackInstalled) return;
+    window.__lpImgFallbackInstalled = true;
+    document.addEventListener('error', (e) => {
+        const t = e.target;
+        if (!t || t.tagName !== 'IMG') return;
+        if (t.dataset.imgFallback === 'strip-clear') {
+            t.src = '';
+            t.classList.add('bg-gray-700');
+        } else if (t.dataset.avatarFallback === 'sibling') {
+            t.style.display = 'none';
+            if (t.nextElementSibling) t.nextElementSibling.style.display = 'flex';
+        } else if (t.dataset.avatarFallback === 'parent-text') {
+            const txt = t.dataset.fallbackText || '';
+            t.style.display = 'none';
+            if (t.parentElement) t.parentElement.textContent = txt;
+        }
+    }, true);
 }
 
 function buildSystemPrompt(character) {

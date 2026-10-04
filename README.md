@@ -17,7 +17,7 @@ A sovereign, local-first persona generation engine.
 
 A desktop application that lets you run powerful local AI characters (personas) using your own GGUF models — no cloud, no complex setup.
 
-Everything runs 100% offline. You own your data and your models.
+Offline by design: chat, characters, and conversations never leave your machine. No accounts, no telemetry. One noted exception: the first time you use the Knowledge Base (RAG), the app downloads a small embedding model (~90 MB, AllMiniLML6V2) — a one-time fetch; everything after that is fully offline.
 
 ## Features
 

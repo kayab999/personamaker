@@ -21,16 +21,36 @@ use std::sync::Arc;
 use std::time::Duration;
 
 fn get_pid_file_path(port: u16) -> PathBuf {
-    // Store PID files in a temp location or app data. Using /tmp for simplicity in this phase.
-    std::env::temp_dir().join(format!("localpersona-llama-server-{}.pid", port))
+    // P1-5: prefer $XDG_RUNTIME_DIR (per-user, 0700) over world-writable /tmp.
+    // Falls back to temp_dir only when no runtime dir exists (e.g. some dev envs).
+    let dir = dirs::runtime_dir()
+        .filter(|d| d.is_dir())
+        .unwrap_or_else(std::env::temp_dir);
+    dir.join(format!("localpersona-llama-server-{}.pid", port))
 }
 
 fn write_pid_file(pid: u32, port: u16) -> Result<(), String> {
     let pid_path = get_pid_file_path(port);
+    // P1-5: refuse to follow a planted symlink at the PID path.
+    if let Ok(meta) = std::fs::symlink_metadata(&pid_path) {
+        if meta.file_type().is_symlink() {
+            std::fs::remove_file(&pid_path)
+                .map_err(|e| format!("PID path was a symlink, removed but failed: {}", e))?;
+        }
+    }
     // A6 hardening: include per-app nonce to distinguish stale files across restarts
     let nonce = get_app_nonce();
     let content = format!("{}\n{}", pid, nonce);
-    crate::storage::atomic_write_bytes(&pid_path, content.as_bytes())
+    crate::storage::atomic_write_bytes(&pid_path, content.as_bytes())?;
+    // P1-5: PID files must not be world-readable (they confirm live ports/PIDs).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perm = std::fs::Permissions::from_mode(0o600);
+        std::fs::set_permissions(&pid_path, perm)
+            .map_err(|e| format!("Failed to set 0600 on PID file: {}", e))?;
+    }
+    Ok(())
 }
 
 fn read_pid_file(port: u16) -> Option<u32> {
@@ -68,6 +88,12 @@ pub fn get_app_nonce() -> String {
     use once_cell::sync::Lazy;
     static NONCE: Lazy<String> = Lazy::new(|| uuid::Uuid::new_v4().to_string());
     NONCE.clone()
+}
+
+/// P1-4: generates a random per-session API key (32 hex chars, no special chars
+/// so it is safe to pass as a CLI arg and HTTP header without quoting issues).
+fn generate_session_api_key() -> String {
+    uuid::Uuid::new_v4().to_string().replace('-', "")
 }
 
 /// A6 hardening: verify PID actually belongs to llama-server/mock before acting.
@@ -228,6 +254,9 @@ pub struct LlamaServerManager {
     last_reset_reason: Option<String>,
     /// Unix epoch millis when the last Arena Reset completed
     last_reset_at_unix_ms: Option<u64>,
+    // P1-4: per-session API key for loopback auth (DNS-rebinding / local-process defense).
+    // Generated fresh on every start(), passed as --api-key, required on every client call.
+    current_api_key: Option<String>,
 }
 
 impl LlamaServerManager {
@@ -249,7 +278,13 @@ impl LlamaServerManager {
             model_context_length: None,
             last_reset_reason: None,
             last_reset_at_unix_ms: None,
+            current_api_key: None,
         }
+    }
+
+    /// P1-4: returns the current session API key (if server was started with auth).
+    pub fn api_key(&self) -> Option<String> {
+        self.current_api_key.clone()
     }
 
     /// Finds the llama-server binary using a robust, cross-platform search strategy.
@@ -335,45 +370,59 @@ impl LlamaServerManager {
 
         let binary = self.resolve_binary().await?;
 
-        // Choose port
-        let port = if let Some(p) = req.preferred_port {
-            if portpicker::is_free_tcp(p) {
-                p
-            } else {
-                portpicker::pick_unused_port().context("No free TCP ports available")?
-            }
-        } else {
-            portpicker::pick_unused_port().context("No free TCP ports available")?
-        };
+        // P1-4: per-session API key (loopback auth). Passed to llama-server and
+        // required on every client request (Bearer). Unknown to other local
+        // processes / rebinding pages.
+        let session_key = generate_session_api_key();
 
-        // Phase 0: Check for stale PID from previous crash (A6 hardened)
-        if let Some((old_pid, old_nonce)) = read_pid_file_with_nonce(port).or_else(|| read_pid_file(port).map(|p| (p, String::new()))) {
-            let current_nonce = get_app_nonce();
-            let is_same_nonce = !old_nonce.is_empty() && old_nonce == current_nonce;
-            if is_same_nonce {
-                log::warn!("PID file for port {} has same nonce (likely same app instance), reusing check skipped", port);
-            } else if is_llama_server_process(old_pid) {
-                log::warn!(
-                    "Found stale PID file for port {} (PID {} verified as llama-server/mock). Ghost detected — cleaning.",
-                    port, old_pid
-                );
-            } else {
-                log::warn!(
-                    "Found stale PID file for port {} (PID {} not verified as llama-server — possibly innocent or dead). Cleaning file only, not killing.",
-                    port, old_pid
-                );
-            }
-            cleanup_stale_pid_file(port);
-        }
+        // Choose port + spawn with retry (P1-4: fixes portpicker TOCTOU — another
+        // process may grab the port between pick and bind; retry with fresh port).
+        let (port, mut child) = {
+            let mut last_err = String::new();
+            let mut result: Option<(u16, Child)> = None;
+            for attempt in 0u8..3 {
+                // First attempt honors preferred_port; retries always pick fresh.
+                let candidate = if attempt == 0 {
+                    if let Some(p) = req.preferred_port {
+                        if portpicker::is_free_tcp(p) { p }
+                        else { portpicker::pick_unused_port().context("No free TCP ports available")? }
+                    } else {
+                        portpicker::pick_unused_port().context("No free TCP ports available")?
+                    }
+                } else {
+                    portpicker::pick_unused_port().context("No free TCP ports available")?
+                };
 
-        let mut cmd = Command::new(&binary);
+                // Phase 0: Check for stale PID from previous crash (A6 hardened)
+                if let Some((old_pid, old_nonce)) = read_pid_file_with_nonce(candidate).or_else(|| read_pid_file(candidate).map(|p| (p, String::new()))) {
+                    let current_nonce = get_app_nonce();
+                    let is_same_nonce = !old_nonce.is_empty() && old_nonce == current_nonce;
+                    if is_same_nonce {
+                        log::warn!("PID file for port {} has same nonce (likely same app instance), reusing check skipped", candidate);
+                    } else if is_llama_server_process(old_pid) {
+                        log::warn!(
+                            "Found stale PID file for port {} (PID {} verified as llama-server/mock). Ghost detected — cleaning.",
+                            candidate, old_pid
+                        );
+                    } else {
+                        log::warn!(
+                            "Found stale PID file for port {} (PID {} not verified as llama-server — possibly innocent or dead). Cleaning file only, not killing.",
+                            candidate, old_pid
+                        );
+                    }
+                    cleanup_stale_pid_file(candidate);
+                }
 
-        cmd.arg("--model")
-            .arg(&req.model_path)
-            .arg("--port")
-            .arg(port.to_string())
-            .arg("--host")
-            .arg("127.0.0.1");
+                let mut cmd = Command::new(&binary);
+
+                cmd.arg("--model")
+                    .arg(&req.model_path)
+                    .arg("--port")
+                    .arg(candidate.to_string())
+                    .arg("--host")
+                    .arg("127.0.0.1")
+                    .arg("--api-key")
+                    .arg(&session_key);
 
         // Context size
         if let Some(ctx) = req.ctx_size {
@@ -421,11 +470,26 @@ impl LlamaServerManager {
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
-        log::info!("Starting llama-server: {:?}", cmd);
+        log::info!("Starting llama-server on port {} (attempt {}/3)", candidate, attempt + 1);
 
-        let mut child = cmd
-            .spawn()
-            .with_context(|| format!("Failed to spawn llama-server at {:?}", binary))?;
+                match cmd.spawn() {
+                    Ok(c) => {
+                        result = Some((candidate, c));
+                        break;
+                    }
+                    Err(e) => {
+                        let msg = e.to_string();
+                        last_err = format!("Failed to spawn llama-server on port {}: {}", candidate, msg);
+                        // P1-4: port race — retry with a fresh port.
+                        log::warn!("{} — retrying with fresh port", last_err);
+                        continue;
+                    }
+                }
+            }
+
+            result
+                .ok_or_else(|| anyhow!("Failed to spawn llama-server after 3 port attempts. Last error: {}", last_err))?
+        };
 
         let child_pid = child.id().unwrap_or(0);
 
@@ -466,6 +530,8 @@ impl LlamaServerManager {
         self.current_model = Some(req.model_path.clone());
         self.current_mmproj = req.mmproj_path.clone();
         self.last_error = None;
+        // P1-4: store session key (cleared on stop()/death).
+        self.current_api_key = Some(session_key.clone());
 
         // Phase 1.5 + Professional Hardening: Arena Reset state
         self.request_count = 0;
@@ -485,8 +551,9 @@ impl LlamaServerManager {
         // The frontend should poll get_inference_status until running becomes true.
         // We keep a short best-effort wait in background (non-blocking for the command).
         let port_for_wait = port;
+        let key_for_wait = session_key.clone();
         tokio::spawn(async move {
-            if let Err(e) = wait_for_server_ready(port_for_wait, Duration::from_secs(15)).await {
+            if let Err(e) = wait_for_server_ready(port_for_wait, Duration::from_secs(15), Some(key_for_wait)).await {
                 log::warn!("Background readiness wait failed for port {}: {}", port_for_wait, e);
             }
         });
@@ -545,6 +612,7 @@ impl LlamaServerManager {
         }
 
         self.current_port = None;
+        self.current_api_key = None;
         self.current_model = None;
         self.current_mmproj = None;
         self.request_count = 0;
@@ -573,6 +641,7 @@ impl LlamaServerManager {
                     let port = self.current_port;
                     self.child = None;
                     self.current_port = None;
+        self.current_api_key = None;
                     self.current_model = None;
                     self.current_mmproj = None;
                     self.last_error = Some(format!("Server process exited with status: {}", status));
@@ -811,6 +880,8 @@ pub struct VoiceServerManager {
 
     last_reset_reason: Option<String>,
     last_reset_at_unix_ms: Option<u64>,
+    // P1-4: per-session API key (mirrors LlamaServerManager).
+    current_api_key: Option<String>,
 }
 
 impl VoiceServerManager {
@@ -831,7 +902,13 @@ impl VoiceServerManager {
             model_context_length: None,
             last_reset_reason: None,
             last_reset_at_unix_ms: None,
+            current_api_key: None,
         }
+    }
+
+    /// P1-4: returns the current voice session API key.
+    pub fn api_key(&self) -> Option<String> {
+        self.current_api_key.clone()
     }
 
     pub fn set_binary_path(&mut self, path: PathBuf) {
@@ -873,6 +950,9 @@ impl VoiceServerManager {
 
         let binary = self.resolve_binary().await?;
 
+        // P1-4: per-session API key for the voice server (same rationale as LLM server).
+        let session_key = generate_session_api_key();
+
         let port = if let Some(p) = req.preferred_port {
             if portpicker::is_free_tcp(p) { p } else { portpicker::pick_unused_port().context("No free ports")? }
         } else {
@@ -882,7 +962,8 @@ impl VoiceServerManager {
         let mut cmd = Command::new(&binary);
         cmd.arg("--model").arg(&req.model_path)
            .arg("--port").arg(port.to_string())
-           .arg("--host").arg("127.0.0.1");
+           .arg("--host").arg("127.0.0.1")
+           .arg("--api-key").arg(&session_key);
 
         if let Some(ngl) = req.gpu_layers {
             cmd.arg("-ngl").arg(ngl.to_string());
@@ -924,6 +1005,8 @@ impl VoiceServerManager {
         self.current_port = Some(port);
         self.current_model = Some(req.model_path.clone());
         self.last_error = None;
+        // P1-4: store voice session key.
+        self.current_api_key = Some(session_key.clone());
         self.request_count = 0;
         self.last_start_request = Some(req.clone());
         self.starting_since = Some(std::time::Instant::now());
@@ -938,8 +1021,9 @@ impl VoiceServerManager {
         // Spawn readiness check as background task (matching LLM server pattern).
         // Returns immediately so the Mutex is released quickly.
         let port_for_wait = port;
+        let key_for_wait = session_key.clone();
         tokio::spawn(async move {
-            if let Err(e) = wait_for_server_ready(port_for_wait, Duration::from_secs(10)).await {
+            if let Err(e) = wait_for_server_ready(port_for_wait, Duration::from_secs(10), Some(key_for_wait)).await {
                 log::warn!("Voice server readiness wait timed out: {}", e);
             }
         });
@@ -990,6 +1074,7 @@ impl VoiceServerManager {
             cleanup_stale_pid_file(port);
         }
         self.current_port = None;
+        self.current_api_key = None;
         self.current_model = None;
         self.starting_since = None;
         self.last_started_at = None;
@@ -1012,6 +1097,7 @@ impl VoiceServerManager {
                     let port = self.current_port;
                     self.child = None;
                     self.current_port = None;
+        self.current_api_key = None;
                     self.current_model = None;
                     self.last_error = Some(format!("Voice server exited with status: {}", status));
                     self.starting_since = None;
@@ -1234,7 +1320,10 @@ fn get_common_llama_server_locations() -> Vec<PathBuf> {
 
 /// Actively waits until the llama-server HTTP endpoint responds successfully.
 /// This is far more reliable than a fixed sleep.
-async fn wait_for_server_ready(port: u16, timeout: Duration) -> Result<(), String> {
+/// P1-4: when the server was started with --api-key, readiness probes must
+/// present the Bearer token (otherwise /v1/models returns 401 and we would
+/// falsely report "not ready"). Always pins Host to 127.0.0.1 (rebind defense).
+async fn wait_for_server_ready(port: u16, timeout: Duration, api_key: Option<String>) -> Result<(), String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(2))
         .redirect(reqwest::redirect::Policy::none())
@@ -1245,7 +1334,11 @@ async fn wait_for_server_ready(port: u16, timeout: Duration) -> Result<(), Strin
     let start = std::time::Instant::now();
 
     while start.elapsed() < timeout {
-        match client.get(&url).send().await {
+        let mut req = client.get(&url).header("Host", format!("127.0.0.1:{}", port));
+        if let Some(ref key) = api_key {
+            req = req.bearer_auth(key);
+        }
+        match req.send().await {
             Ok(resp) if resp.status().is_success() => {
                 log::info!("Server on port {} is ready (responded to /v1/models)", port);
                 return Ok(());

@@ -61,6 +61,27 @@ fn validate_localhost_endpoint(api_base: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// P1-4: derives a pinned Host header from a validated localhost endpoint URL
+/// (DNS-rebinding defense: the client always asserts the expected Host rather
+/// than whatever the URL parser / proxy might forward).
+fn endpoint_host_header(endpoint: &str) -> String {
+    // Strip scheme, take authority up to next '/'.
+    let without_scheme = endpoint
+        .split("://")
+        .nth(1)
+        .unwrap_or(endpoint);
+    let authority = without_scheme.split('/').next().unwrap_or(without_scheme);
+    // Only ever emit loopback authorities; fall back to 127.0.0.1 on parse failure.
+    if authority.starts_with("127.0.0.1:")
+        || authority.starts_with("localhost:")
+        || authority.starts_with("[::1]:")
+    {
+        authority.to_string()
+    } else {
+        "127.0.0.1".to_string()
+    }
+}
+
 /// Starts the local llama-server with the given model and parameters.
 /// For Vision models (VLMs), include the `mmproj_path` pointing to the projector file.
 #[command]
@@ -732,7 +753,7 @@ async fn post_chat_completion(
 
     let mut last_err = String::new();
     for attempt in 0..2u8 {
-        let endpoint = {
+        let (endpoint, session_key) = {
             let mut manager = state.lock().await;
             let crashed = manager.check_health();
             if crashed {
@@ -776,13 +797,20 @@ async fn post_chat_completion(
             }
             let api_base = status.api_base.ok_or("No API base URL")?;
             validate_localhost_endpoint(&api_base)?;
-            format!("{}/chat/completions", api_base)
+            // P1-4: session Bearer key (server started with --api-key).
+            let session_key = manager.api_key();
+            (format!("{}/chat/completions", api_base), session_key)
         };
 
-        let response = HTTP_CLIENT
+        let mut req = HTTP_CLIENT
             .clone()
             .post(&endpoint)
             .header("Content-Type", "application/json")
+            .header("Host", endpoint_host_header(&endpoint));
+        if let Some(ref key) = session_key {
+            req = req.bearer_auth(key);
+        }
+        let response = req
             .json(&request_body)
             .send()
             .await;
@@ -1902,8 +1930,20 @@ pub async fn generate_speech(
         "response_format": "wav"
     });
 
-    let response = client
+    // P1-4: attach managed voice-server session key when available (best-effort,
+    // non-blocking — TTS must not contend the server Mutex for HTTP I/O).
+    let voice_key: Option<String> = voice_server
+        .inner()
+        .try_lock()
+        .ok()
+        .and_then(|m| m.api_key());
+    let mut tts_req = client
         .post(&endpoint)
+        .header("Host", endpoint_host_header(&endpoint));
+    if let Some(ref key) = voice_key {
+        tts_req = tts_req.bearer_auth(key);
+    }
+    let response = tts_req
         .json(&body)
         .send()
         .await

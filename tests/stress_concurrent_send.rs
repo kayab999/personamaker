@@ -22,6 +22,7 @@ fn locked_append(path: &std::path::Path, payload: &str) {
     }
     let lock_file = OpenOptions::new()
         .create(true)
+        .truncate(true)
         .write(true)
         .open(&lock_path)
         .unwrap();
@@ -128,7 +129,7 @@ fn test_b9_repair_vs_concurrent_append_no_clobber() {
             os.push(".lock");
             std::path::PathBuf::from(os)
         };
-        let lock_file = OpenOptions::new().create(true).write(true).open(&lock_path).unwrap();
+        let lock_file = OpenOptions::new().create(true).truncate(true).write(true).open(&lock_path).unwrap();
         fs2::FileExt::lock_exclusive(&lock_file).unwrap();
 
         // Backup and rewrite

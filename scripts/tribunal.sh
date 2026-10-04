@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# 🛡️ El Tribunal Implacable — LocalPersona v7.2
+# 🛡️ El Tribunal Implacable — LocalPersona v12.0 (mirrors .github/workflows/tribunal.yml)
 #
 # This is the enforceable root gate for the audit-fix-audit loop.
 # Every commit (human or agent) must pass this or be rejected.
+# Version is kept in lockstep with the CI workflow name (Forensic Tribunal — vX.Y).
+# Bump BOTH files together.
 #
 # Invariants enforced today:
 #   - cargo check (no compilation debt)
@@ -27,7 +29,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-echo "🛡️  Ejecutando el Tribunal Implacable (v7.2)..."
+echo "🛡️  Ejecutando el Tribunal Implacable (v12.0)..."
 echo "    Scope: cargo check + destructive tests (Arena Reset, ndjson integrity, locks, ID validation, etc.)"
 echo ""
 

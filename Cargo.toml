@@ -62,4 +62,6 @@ lto = "thin"
 codegen-units = 1
 strip = true
 opt-level = 3
-panic = "abort"
+# P0-3: unwind (not abort) so panics in PDF/embed parsers run Drop (server cleanup)
+# and can be caught per-document instead of killing the whole app.
+panic = "unwind"

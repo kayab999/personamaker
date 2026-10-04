@@ -6,24 +6,9 @@
     <title>LocalPersona — AI Characters with Local GGUF Models</title>
     <script src="vendor/tailwind.js"></script>
     <link rel="stylesheet" href="style.css">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <!-- Audit R5: Tailwind vendored locally (frontend/vendor/tailwind.js, 398KB) to satisfy offline-by-design. Fonts still CDN with CSP allowance — full font vendoring deferred. -->
-    <script>
-        tailwind.config = {
-            darkMode: 'class',
-            theme: {
-                extend: {
-                    fontFamily: { sans: ['Inter', 'system-ui', 'sans-serif'] },
-                    colors: {
-                        surface: { DEFAULT: '#1a1a2e', light: '#222240', lighter: '#2a2a45', hover: '#333358' },
-                        accent: { DEFAULT: '#7c3aed', light: '#a78bfa', glow: '#c4b5fd' },
-                        chat: { user: '#3b3b5c', ai: '#1e1e35' },
-                    }
-                }
-            }
-        }
-    </script>
+    <!-- Fonts: system stack only (offline-by-design). Inter via system install if present; no Google Fonts CDN (privacy + offline). -->
+    <!-- Audit P0: Tailwind + lucide vendored locally (frontend/vendor/). No inline script blocks per strict CSP. -->
+    <script src="tailwind.config.js"></script>
 </head>
 <body class="bg-[#0f0f1a] text-gray-100 font-sans h-screen overflow-hidden">
 
@@ -757,7 +742,7 @@
             </div>
 
             <div class="mt-3 text-[10px] text-gray-500 text-right">
-                Content sourced from bundled USER_MANUAL.md • Everything runs 100% offline
+                Content sourced from bundled USER_MANUAL.md • Offline by design (one-time embedding-model download on first RAG use)
             </div>
         </div>
     </div>
@@ -776,7 +761,7 @@
         </div>
     </div>
 
-    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="vendor/lucide.js"></script>
     <script src="script.js"></script>
 </body>
 </html>

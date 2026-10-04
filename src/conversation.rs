@@ -467,11 +467,20 @@ pub fn load_messages_within_token_budget(
     let file = fs::File::open(&msg_path).map_err(|e| e.to_string())?;
     let reader = BufReader::new(file);
 
-    let mut all_lines: Vec<String> = reader
-        .lines()
-        .filter_map(|l| l.ok())
-        .filter(|l| !l.trim().is_empty())
-        .collect();
+    // NOTE: explicit loop (not filter_map) — io::Lines can yield infinite
+    // Errs on read failure, and skipping (not stopping at) bad lines is the
+    // intended "load what survives corruption" behavior.
+    let mut all_lines: Vec<String> = Vec::new();
+    for line in reader.lines() {
+        match line {
+            Ok(l) => {
+                if !l.trim().is_empty() {
+                    all_lines.push(l);
+                }
+            }
+            Err(e) => log::warn!("Skipping unreadable conversation line: {}", e),
+        }
+    }
 
     // Work backwards from the end
     let mut selected: Vec<ChatMessage> = Vec::new();

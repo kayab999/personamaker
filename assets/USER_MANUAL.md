@@ -2,7 +2,9 @@
 
 Welcome to **LocalPersona** — a desktop application for chatting with rich, local AI personas powered by your own GGUF models.
 
-Everything runs 100% offline using models you control.
+Your chats, characters, and conversations never leave your machine — no accounts, no telemetry.
+
+One noted exception: the first time you attach a Knowledge Base document (RAG), the app downloads a small embedding model (~90 MB, one-time). After that download, everything is fully offline.
 
 ---
 

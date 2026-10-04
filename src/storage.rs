@@ -80,6 +80,7 @@ pub(crate) fn acquire_sidecar_lock(target_path: &Path) -> Result<std::fs::File, 
 
     let lock_file = OpenOptions::new()
         .create(true)
+        .truncate(true)
         .write(true)
         .open(&lock_path)
         .map_err(|e| format!("Failed to open lock file: {}", e))?;
@@ -317,13 +318,29 @@ pub fn ensure_characters_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(characters_dir)
 }
 
+/// P0-2: allowlist for avatar colors (defense in depth — imported JSON could carry CSS injection).
+pub fn sanitize_avatar_color(raw: &str) -> String {
+    let t = raw.trim();
+    if t.len() == 7
+        && t.starts_with('#')
+        && t[1..].chars().all(|c| c.is_ascii_hexdigit())
+    {
+        t.to_string()
+    } else {
+        "#7c3aed".to_string()
+    }
+}
+
 /// Saves a single character to disk as JSON.
 pub fn save_character(app: &AppHandle, character: &StoredCharacter) -> Result<(), String> {
     validate_character_id(&character.id)?;
+    // P0-2: normalize avatar color before persisting (imported characters are untrusted input).
+    let mut normalized = character.clone();
+    normalized.avatar_color = sanitize_avatar_color(&character.avatar_color);
     let characters_dir = ensure_characters_dir(app)?;
     let file_path = characters_dir.join(format!("{}.json", character.id));
 
-    let json = serde_json::to_string_pretty(character)
+    let json = serde_json::to_string_pretty(&normalized)
         .map_err(|e| format!("Failed to serialize character: {}", e))?;
 
     atomic_write(&file_path, &json)
@@ -566,19 +583,79 @@ pub fn ensure_images_dir(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 pub fn get_absolute_path(app: &AppHandle, relative_path: &str) -> Result<std::path::PathBuf, String> {
+    use std::path::Component;
     let base = get_app_data_dir(app)?;
 
-    // Normalize and strip dangerous path components (especially ParentDir / "..")
-    let normalized: std::path::PathBuf = std::path::Path::new(relative_path)
-        .components()
-        .filter(|c| !matches!(c, std::path::Component::ParentDir))
-        .collect();
+    // P1-6: REJECT (never sanitize) dangerous paths. Stripping `..` silently
+    // rewrites attacker input into a different valid path — fail closed instead.
+    if relative_path.is_empty() {
+        return Err("Empty path".to_string());
+    }
+    let rel = std::path::Path::new(relative_path);
+    if rel.is_absolute() {
+        return Err("Absolute paths are not allowed".to_string());
+    }
+    for comp in rel.components() {
+        match comp {
+            Component::ParentDir => {
+                return Err("Path traversal detected: `..` is not allowed".to_string());
+            }
+            Component::RootDir | Component::Prefix(_) => {
+                return Err("Absolute path components are not allowed".to_string());
+            }
+            Component::CurDir => {
+                return Err("`.` components are not allowed; use clean relative paths".to_string());
+            }
+            Component::Normal(_) => {}
+        }
+    }
 
-    let full = base.join(normalized);
+    let full = base.join(rel);
 
     // Final safety check: the resolved path must still be inside our app data directory
     if !full.starts_with(&base) {
         return Err("Path traversal detected: attempted to escape app data directory".to_string());
+    }
+
+    // P1-6: symlink defense — reject if the target or any existing ancestor
+    // inside our data dir is a symlink (prevents escape via planted links).
+    // Non-existent tails (new files) are fine; we check what exists.
+    let mut probe = full.clone();
+    loop {
+        if let Ok(meta) = std::fs::symlink_metadata(&probe) {
+            if meta.file_type().is_symlink() {
+                return Err("Symlinks are not allowed in app data paths".to_string());
+            }
+        }
+        // Stop once we reach the base (base itself is trusted).
+        if probe == base {
+            break;
+        }
+        match probe.parent() {
+            Some(parent) if probe != *parent => probe = parent.to_path_buf(),
+            _ => break,
+        }
+        // Don't walk above base.
+        if !probe.starts_with(&base) {
+            break;
+        }
+    }
+
+    // P1-6: canonicalize what exists for a final containment proof.
+    // (New files don't exist yet — canonicalize the nearest existing ancestor.)
+    let mut anchor = full.clone();
+    while !anchor.exists() {
+        match anchor.parent() {
+            Some(p) if anchor != *p => anchor = p.to_path_buf(),
+            _ => break,
+        }
+    }
+    if anchor.exists() {
+        if let (Ok(c_base), Ok(c_anchor)) = (base.canonicalize(), anchor.canonicalize()) {
+            if !c_anchor.starts_with(&c_base) {
+                return Err("Path traversal detected: canonical path escapes app data directory".to_string());
+            }
+        }
     }
 
     Ok(full)
@@ -759,17 +836,24 @@ pub fn process_character_document(
 }
 
 fn extract_text_from_pdf(path: &Path) -> Result<String, String> {
+    // P0-3: isolate panics from malformed PDFs (pure-Rust parsers panic on hostile input).
+    // With panic="unwind" this catch prevents one bad upload from killing the app
+    // and skipping Drop cleanup for llama-server.
     // M06: Use pdf-extract for real PDF text extraction
     let bytes = std::fs::read(path).map_err(|e| format!("Failed to read PDF file: {}", e))?;
-    match pdf_extract::extract_text_from_mem(&bytes) {
-        Ok(text) => {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        pdf_extract::extract_text_from_mem(&bytes)
+    }));
+    match result {
+        Err(_) => Err("PDF parsing panicked (likely malformed file); document rejected safely".to_string()),
+        Ok(Err(e)) => Err(format!("Failed to extract text from PDF: {}", e)),
+        Ok(Ok(text)) => {
             if text.trim().is_empty() {
                 Err("PDF contains no extractable text (may be a scanned document or image-based PDF)".to_string())
             } else {
                 Ok(text)
             }
         }
-        Err(e) => Err(format!("Failed to extract text from PDF: {}", e))
     }
 }
 

@@ -1,0 +1,21 @@
+# cargo-audit configuration (P1.5 supply-chain gate).
+# `cargo audit` fails CI on any non-ignored advisory. Entries below are
+# accepted risks with no compatible upstream fix as of 2026-10-04
+# (verified via `cargo update -p <crate>` — 0 packages updatable).
+# Re-audit on every Cargo.lock change; drop entries once fixed upstream.
+[advisories]
+ignore = [
+    # RUSTSEC-2026-0187: lopdf stack overflow via deeply nested PDF objects.
+    # Relevant to F-02 (PDF ingest). Mitigated in-app by catch_unwind +
+    # panic="unwind" ( hostile PDFs rejected, no full-app kill for Rust-level
+    # panics). Residual: true stack exhaustion is not unwindable — tracked
+    # follow-up is process-isolated PDF parsing. pdf-extract pins lopdf 0.34.
+    "RUSTSEC-2026-0187",
+    # RUSTSEC-2026-0195: quick-xml unbounded namespace allocation (DoS).
+    # Transitive (via plist/tauri-bundler chain); only parses trusted local
+    # plists/bundles, never remote input. No compatible update available.
+    "RUSTSEC-2026-0195",
+    # RUSTSEC-2026-0194: quick-xml quadratic duplicate-attribute check (DoS).
+    # Same exposure/rationale as RUSTSEC-2026-0195.
+    "RUSTSEC-2026-0194",
+]

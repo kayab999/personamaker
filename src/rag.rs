@@ -64,6 +64,9 @@ static EMBEDDING_MODEL: Lazy<Mutex<Option<TextEmbedding>>> = Lazy::new(|| {
 });
 
 /// Computes embeddings for a list of strings.
+/// NOTE (offline honesty): the first call downloads the embedding model
+/// (~90 MB, AllMiniLML6V2) from the model hub — a one-time network fetch
+/// triggered by first RAG use. All subsequent calls are fully offline.
 /// C03: Uses catch_unwind to recover from Mutex poisoning.
 pub fn embed_texts(texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
     use std::panic::AssertUnwindSafe;
@@ -85,21 +88,31 @@ pub fn embed_texts(texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
         }
     };
     if guard.is_none() {
-        match TextEmbedding::try_new(InitOptions::new(EmbeddingModel::AllMiniLML6V2)
-            .with_show_download_progress(true))
-        {
-            Ok(model) => {
-                log::info!("Embedding model initialized successfully");
-                *guard = Some(model);
+        // P0-3: isolate init panics (model download / ONNX load on hostile env).
+        let init_result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            TextEmbedding::try_new(InitOptions::new(EmbeddingModel::AllMiniLML6V2)
+                .with_show_download_progress(true))
+        }));
+        match init_result {
+            Err(_) => {
+                log::error!("Embedding model init panicked; will retry on next call");
+                return Err(anyhow!("Embedding model init panicked (recovered safely)"));
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 log::warn!("Failed to initialize embedding model (will retry on next call): {}", e);
                 return Err(anyhow!("Failed to initialize embedding model: {}", e));
+            }
+            Ok(Ok(model)) => {
+                log::info!("Embedding model initialized successfully");
+                *guard = Some(model);
             }
         }
     }
     let model = guard.as_mut().ok_or_else(|| anyhow!("Embedding model not available"))?;
-    model.embed(texts, None).map_err(|e| anyhow!("Failed to generate embeddings: {}", e))
+    // P0-3: isolate embed-time panics per query so one bad input can't kill the app.
+    std::panic::catch_unwind(AssertUnwindSafe(|| model.embed(texts, None)))
+        .map_err(|_| anyhow!("Embedding inference panicked (recovered safely)"))?
+        .map_err(|e| anyhow!("Failed to generate embeddings: {}", e))
 }
 
 /// Simple cosine similarity between two vectors

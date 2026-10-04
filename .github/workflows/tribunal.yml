@@ -197,6 +197,51 @@ jobs:
         run: |
           grep -q "MemoryMonitor" src/memory_monitor.rs && echo "✅ Memory Monitor module present" || exit 1
 
+  # ==================== Supply-Chain Audit (P1.5) ====================
+  audit:
+    name: Supply-Chain Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: cargo audit (advisories block, warnings shown)
+        # Accepted-risk ignores are documented in audit.toml (no compatible
+        # upstream fix as of 2026-10-04). Flags passed explicitly because
+        # cargo-audit does not reliably auto-load audit.toml in CI.
+        run: >
+          cargo audit
+          --ignore RUSTSEC-2026-0187
+          --ignore RUSTSEC-2026-0195
+          --ignore RUSTSEC-2026-0194
+
+  # ==================== Coverage (informational, P1.5) ====================
+  coverage:
+    name: Coverage Report (informational)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --locked
+
+      - name: Coverage (storage, conversation, commands)
+        run: cargo llvm-cov --lib --tests --lcov --output-path lcov.info
+
+      - name: Coverage summary
+        run: cargo llvm-cov --lib --tests --summary-only
+
   # ==================== Frontend Checks ====================
   frontend:
     name: Frontend Security
@@ -230,11 +275,38 @@ jobs:
           fi
           echo "✅ callLocalLLM removed"
 
+      - name: Check strict CSP (P0-1 — no unsafe-inline in script-src, no remote scripts)
+        run: |
+          CSP=$(python3 -c "import json;print(json.load(open('tauri.conf.json'))['app']['security']['csp'])")
+          echo "CSP: $CSP"
+          echo "$CSP" | grep -q "script-src 'self'" || (echo "⚠️ script-src must be 'self' only" && exit 1)
+          case "$CSP" in
+            *script-src*unsafe-inline*) echo "⚠️ script-src must not contain unsafe-inline" && exit 1;;
+          esac
+          case "$CSP" in
+            *base-uri*|*object-src*|*form-action*) echo "✅ CSP has base-uri/object-src/form-action";;
+            *) echo "⚠️ CSP missing base-uri/object-src/form-action" && exit 1;;
+          esac
+          if grep -q "fonts.googleapis.com\|fonts.gstatic.com\|unpkg.com" frontend/index.html; then
+            echo "⚠️ index.html still references remote CDN (offline violation)" && exit 1
+          fi
+          if grep -q "<script>" frontend/index.html; then
+            echo "⚠️ inline <script> block in index.html (CSP violation)" && exit 1
+          fi
+          echo "✅ CSP + offline checks passed"
+
+      - name: Check for inline event handlers (P0-2 — no onerror=/onclick= under strict CSP)
+        run: |
+          if grep -n "onerror=\|onclick=\|onload=" frontend/script.js; then
+            echo "⚠️ inline event handlers break strict CSP — use delegation" && exit 1
+          fi
+          echo "✅ no inline handlers"
+
   # ==================== Tribunal Verdict ====================
   verdict:
     name: Tribunal Verdict
     runs-on: ubuntu-latest
-    needs: [build, test, proptest, autopsy, clippy, security, frontend]
+    needs: [build, test, proptest, autopsy, clippy, security, audit, frontend]
     steps:
       - name: All checks passed
         run: |
@@ -245,8 +317,9 @@ jobs:
           echo "║ ✅ Unit Tests:   PASS                    ║"
           echo "║ ✅ Property Tests: PASS                  ║"
            echo "║ ✅ AutopsyDump:  VERIFIED                ║"
-           echo "║ ✅ Clippy:       PASS                    ║"
-           echo "║ ✅ Security:     PASS                    ║"
+          echo "║ ✅ Clippy:       PASS                    ║"
+          echo "║ ✅ Security:     PASS                    ║"
+          echo "║ ✅ Audit:        PASS                    ║"
           echo "║ ✅ Frontend:     PASS                    ║"
           echo "╠══════════════════════════════════════════╣"
           echo "║ Blast Radius: 0                          ║"

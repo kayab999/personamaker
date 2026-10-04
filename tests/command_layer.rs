@@ -58,12 +58,25 @@ async fn start_mock_manager(mode: &str, extra_args: &[&str]) -> (LlamaServerMana
 
 // Helper to spawn mock directly (bypassing manager) for fault injection where manager lifecycle not needed
 async fn spawn_mock_manual(port: u16, mode: &str, extra: &[&str]) -> tokio::process::Child {
+    // P1.5 fix (test isolation): the mock persists its mode in a state file
+    // (scripts/mock_state.json by default, first-touch wins over CLI --mode),
+    // so parallel tests used to inherit whichever mode won the race and every
+    // fault-mode test saw e.g. "malformed". Give each spawn a unique MOCK_STATE.
+    let state_file = std::env::temp_dir().join(format!(
+        "localpersona-mock-state-{}-{}.json",
+        port,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
     let mut cmd = tokio::process::Command::new("python3");
     cmd.arg("scripts/mock_llama_server.py")
         .arg("--port")
         .arg(port.to_string())
         .arg("--mode")
-        .arg(mode);
+        .arg(mode)
+        .env("MOCK_STATE", &state_file);
     for a in extra {
         cmd.arg(a);
     }
@@ -90,6 +103,18 @@ async fn wait_for_mock_ready(port: u16) {
 #[tokio::test]
 async fn test_a1_kill_mid_generation_manager_detects() {
     // A1: kill child mid-generation → manager detects, no partial append, auto-restart
+    // P1.5: manager-spawned mock inherits process env — pin a unique MOCK_STATE
+    // so parallel fault-mode tests can't leak their mode into this mock's state file.
+    std::env::set_var(
+        "MOCK_STATE",
+        std::env::temp_dir().join(format!(
+            "localpersona-mock-state-a1-{}.json",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        )),
+    );
     let (mut mgr, port) = start_mock_manager("normal", &[]).await;
     assert!(mgr.is_running());
     assert_eq!(mgr.status().port, Some(port));

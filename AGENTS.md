@@ -47,7 +47,7 @@ A universal, one-click desktop application for running rich AI personas/characte
 1. **Local ownership & data sovereignty** — Every character, conversation, voice sample, and knowledge document is a real file the user fully controls.
 2. **Depth over virality** — Prioritize consistency, interesting simulated personalities, and creative utility. Actively avoid the app becoming "AI Tinder" or being dominated by low-effort erotic/romance roleplay.
 3. **Creative tool aesthetic** — The experience should feel closer to a writing studio or a private simulated social space than a typical chatbot interface.
-4. **No cloud lock-in** — 100% offline by design. No telemetry, no accounts, no forced updates that break local workflows.
+4. **No cloud lock-in** — Offline by design. No telemetry, no accounts, no forced updates that break local workflows. (One documented exception: first RAG use downloads the fastembed embedding model ~90 MB, one-time.)
 
 ### Current Architecture (2026)
 
