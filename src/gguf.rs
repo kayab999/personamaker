@@ -6,6 +6,17 @@ use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
+/// Hostile-header sanity bounds (Phase A / fuzz corpus work, 2026-10-30).
+/// GGUF lengths and counts are parsed from untrusted bytes as u64; without
+/// caps a corrupt or malicious file can either allocate `2^64` bytes via
+/// `vec![0u8; len]` (abort/OOM) or drive a no-op loop for ~2^64 iterations.
+/// Real models sit far below every bound (largest observed: vocab string
+/// arrays — a single KV whose array length is under ~260k).
+const MAX_KV_COUNT: u64 = 10_000;
+const MAX_KEY_LEN: u64 = 4096;
+const MAX_STRING_LEN: u64 = 8 * 1024 * 1024;
+const MAX_ARRAY_LEN: u64 = 1_000_000;
+
 #[derive(Debug, Clone, Default)]
 pub struct GgufMetadata {
     pub architecture: Option<String>,
@@ -57,6 +68,13 @@ fn read_gguf_metadata_from_reader<R: Read + Seek>(reader: &mut BufReader<R>) -> 
 
     let kv_count = u64::from_le_bytes(kv_count_bytes);
 
+    if kv_count > MAX_KV_COUNT {
+        return Err(format!(
+            "GGUF header kv_count {} exceeds sanity limit {} (corrupt or hostile file)",
+            kv_count, MAX_KV_COUNT
+        ));
+    }
+
     let mut meta = GgufMetadata::default();
 
     for _ in 0..kv_count {
@@ -93,6 +111,13 @@ fn read_kv_pair_generic<R: Read + Seek>(reader: &mut BufReader<R>) -> Result<(St
     let mut key_len_bytes = [0u8; 8];
     reader.read_exact(&mut key_len_bytes).map_err(|e| e.to_string())?;
     let key_len = u64::from_le_bytes(key_len_bytes) as usize;
+
+    if key_len as u64 > MAX_KEY_LEN {
+        return Err(format!(
+            "GGUF key length {} exceeds sanity limit {} (corrupt or hostile file)",
+            key_len, MAX_KEY_LEN
+        ));
+    }
 
     let mut key_bytes = vec![0u8; key_len];
     reader.read_exact(&mut key_bytes).map_err(|e| e.to_string())?;
@@ -148,6 +173,12 @@ fn read_kv_pair_generic<R: Read + Seek>(reader: &mut BufReader<R>) -> Result<(St
             let mut len_bytes = [0u8; 8];
             reader.read_exact(&mut len_bytes).map_err(|e| e.to_string())?;
             let len = u64::from_le_bytes(len_bytes) as usize;
+            if len as u64 > MAX_STRING_LEN {
+                return Err(format!(
+                    "GGUF string length {} exceeds sanity limit {} (corrupt or hostile file)",
+                    len, MAX_STRING_LEN
+                ));
+            }
             let mut data = vec![0u8; len];
             reader.read_exact(&mut data).map_err(|e| e.to_string())?;
             let s = String::from_utf8_lossy(&data).to_string();
@@ -160,6 +191,12 @@ fn read_kv_pair_generic<R: Read + Seek>(reader: &mut BufReader<R>) -> Result<(St
             let mut len_bytes = [0u8; 8];
             reader.read_exact(&mut len_bytes).map_err(|e| e.to_string())?;
             let len = u64::from_le_bytes(len_bytes);
+            if len > MAX_ARRAY_LEN {
+                return Err(format!(
+                    "GGUF array of {} elements exceeds sanity limit {} (corrupt or hostile file)",
+                    len, MAX_ARRAY_LEN
+                ));
+            }
             for _ in 0..len {
                 match elem_type {
                     0 | 1 | 7 => { // UINT8, INT8, BOOL = 1 byte

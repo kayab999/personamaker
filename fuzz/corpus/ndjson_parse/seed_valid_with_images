@@ -1,0 +1,1 @@
+{"id":"m-2","conversation_id":"c-1","speaker_id":"char-1","speaker_name":"Guide","content":"I can see your image.","timestamp":1730000001000,"role":"assistant","images":[{"id":"img-1","path":"images/img-1.png","mime_type":"image/png","width":640,"height":480}],"token_count":12}

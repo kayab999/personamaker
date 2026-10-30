@@ -26,6 +26,7 @@
 | 6 | Temperature / max tokens change affects requests (settings save + send) | |
 | 7 | Worker kill mid-reply: toast, no corrupt ndjson, next send works | |
 | 8 | Arena reset (300 req or 45m): recovery without data loss | |
+| 9 | Fresh install & startup: `dpkg -i` the shipped `.deb`, launch from menu, window opens, default personas load, first conversation sends | |
 
 ## Known limitations (document in release notes)
 

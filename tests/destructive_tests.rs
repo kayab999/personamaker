@@ -999,6 +999,105 @@ fn test_gguf_array_skip_varied_widths() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Phase A (2026-10-30): hostile-header bounds. GGUF len/count fields drive
+/// allocations and loops in the parser; each must fail fast instead of OOMing
+/// or spinning ~2^64 no-op iterations. Guard rails live in `src/gguf.rs`
+/// (MAX_KV_COUNT / MAX_KEY_LEN / MAX_STRING_LEN / MAX_ARRAY_LEN).
+#[test]
+fn gguf_hostile_headers_fail_fast() -> anyhow::Result<()> {
+    use std::fs;
+    use std::time::{Duration, Instant};
+
+    fn write_str(buf: &mut Vec<u8>, s: &str) {
+        buf.extend_from_slice(&(s.len() as u64).to_le_bytes());
+        buf.extend_from_slice(s.as_bytes());
+    }
+    fn header(kv_count: u64) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"GGUF");
+        buf.extend_from_slice(&3u32.to_le_bytes());
+        buf.extend_from_slice(&0u64.to_le_bytes()); // tensor_count
+        buf.extend_from_slice(&kv_count.to_le_bytes());
+        buf
+    }
+
+    let temp = TempDir::new()?;
+
+    // Two contract tiers (verified against the live parser, 2026-10-30):
+    // - header-level claims (kv_count) fail the whole file;
+    // - entry-level claims degrade to skip-and-continue, so the result is
+    //   Ok with all-None metadata — the invariants that matter are "no
+    //   OOM" and "no degenerate loop", asserted via the time bound below.
+    let cases: Vec<(&str, bool /* whole-file reject */, Vec<u8>)> = vec![
+        // (a) absurd kv_count claim, file truncated right after header
+        ("kv_count_u64max", true, {
+            let mut b = header(u64::MAX);
+            b.extend_from_slice(&8u8.to_le_bytes()); // partial key len bytes only
+            b
+        }),
+        // (b) absurd key length claim
+        ("key_len_100k", false, {
+            let mut b = header(1);
+            b.extend_from_slice(&100_000u64.to_le_bytes());
+            let junk = vec![b'a'; 64];
+            b.extend_from_slice(&junk);
+            b
+        }),
+        // (c) absurd string value length claim (128 MB)
+        ("string_len_128mb", false, {
+            let mut b = header(1);
+            write_str(&mut b, "general.name");
+            b.extend_from_slice(&8u32.to_le_bytes()); // STRING
+            b.extend_from_slice(&(128u64 * 1024 * 1024).to_le_bytes());
+            b
+        }),
+        // (d) absurd array element count claim
+        ("array_len_5m", false, {
+            let mut b = header(1);
+            write_str(&mut b, "test.big_array");
+            b.extend_from_slice(&9u32.to_le_bytes()); // ARRAY
+            b.extend_from_slice(&8u32.to_le_bytes()); // elem type STRING
+            b.extend_from_slice(&5_000_000u64.to_le_bytes());
+            b
+        }),
+    ];
+
+    for (name, reject_file, bytes) in cases {
+        let path = temp.path().join(format!("{}.gguf", name));
+        fs::write(&path, &bytes)?;
+        let start = Instant::now();
+        let result = localpersona::gguf::parse_gguf_bytes(&bytes);
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "hostile header case {} must proceed fast (no degenerate loop/alloc); took {:?}",
+            name,
+            elapsed
+        );
+        match result {
+            Ok(meta) => {
+                assert!(
+                    !reject_file,
+                    "hostile header case {} must be rejected at file level",
+                    name
+                );
+                // Entry-level damage must degrade to empty metadata, never
+                // panic or leak fabricated values from hostile bytes.
+                assert!(meta.architecture.is_none(), "case {} leaked arch", name);
+                assert!(meta.context_length.is_none(), "case {} leaked ctx", name);
+            }
+            Err(_) => {
+                assert!(
+                    reject_file,
+                    "hostile header case {} should degrade gracefully, not reject",
+                    name
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn test_finish_reason_length_marker() -> anyhow::Result<()> {
     use localpersona::commands::{apply_truncation_marker, parse_llm_response};

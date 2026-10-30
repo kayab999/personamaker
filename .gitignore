@@ -3,7 +3,11 @@
 /dist
 /src-tauri/target
 /fuzz/target/
-fuzz/corpus/
+# Fuzz corpus: hand-written seed_* files are COMMITTED pins (tests/
+# fuzz_corpus_seeds.rs guards them); libfuzzer-evolved hash-named inputs
+# elsewhere are ignored so fuzz runs can grow the corpus locally without
+# polluting commits.
+fuzz/corpus/**/[0-9a-f]*
 fuzz/artifacts/
 
 # Tauri
@@ -53,3 +57,4 @@ package-lock.json
 
 # Keep lockfile for reproducible app builds
 # (do not ignore Cargo.lock for this binary crate)
+/mock_requests.jsonl

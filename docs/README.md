@@ -6,6 +6,7 @@ Start here to find the right doc without reading everything.
 
 | Doc | Audience | Purpose |
 |-----|----------|---------|
+| [../HANDOVER.md](../HANDOVER.md) | Agents / maintainers | **Durable progress + mission state record** (update per checkpoint) |
 | [handbook/CONTEXT_DUMP.txt](./handbook/CONTEXT_DUMP.txt) | Everyone / paste into agents | **Plain-text current status dump** |
 | [handbook/ARCHITECTURE_AND_STATUS.md](./handbook/ARCHITECTURE_AND_STATUS.md) | Engineers, agents | **Full architectural blueprint + current project status** |
 | [../README.md](../README.md) | Everyone | Product overview, features, build entry points |

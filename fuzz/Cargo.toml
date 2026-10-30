@@ -9,6 +9,8 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+# ndjson_parse target calls serde_json::from_slice directly for Value coverage.
+serde_json = "1"
 
 [dependencies.localpersona]
 path = ".."
