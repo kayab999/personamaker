@@ -2,6 +2,37 @@
 
 All notable changes to LocalPersona are documented in this file.
 
+## [Unreleased] — Phase A + B1 (2026-10-30)
+
+### Added
+- **Real token streaming (Phase B1)**: `stream_message_with_images` + `abort_inference_stream`
+  commands; `llm-stream` Tauri events (`chunk` / `stalled` / `final`) correlated by
+  requestId; explicit lifecycle `PENDING → STREAMING → COMPLETED|FAILED|ABORTED`;
+  single-owner exactly-once finalization (user + assistant appended in one batch
+  at stream end; `ChatMessage.incomplete` flags persisted partial turns;
+  zero-content failures persist nothing). Send button doubles as Stop while a stream runs.
+- Fuzz corpus seeds (13) for `gguf_parse` / `ndjson_parse` / `pdf_ingest` +
+  rot guard suite `tests/fuzz_corpus_seeds.rs` + runbook `fuzz/README.md`
+  (run: `cargo +nightly fuzz run <target> fuzz/corpus/<target> -- -max_total_time=60`,
+  requires nightly because libFuzzer builds with `-Z` flags).
+- GGUF hostile-header sanity caps (kv_count / key length / string length / array
+  length) — a corrupt header can no longer drive OOM allocations or ~2^64-iteration loops.
+
+### Fixed
+- Documentation drift: AGENTS.md now matches verified code (test counts, CI job
+  count, GGUF parser location, models.rs stub status, GGUF context-length already read).
+- `fuzz/Cargo.toml` was missing the `serde_json` dependency — the `ndjson_parse`
+  fuzz target could never build (latent since the sweep).
+- Streaming mock modes (`stream_*`) added to `scripts/mock_llama_server.py` for
+  deterministic Tribunal coverage; mock argparse choices now include them.
+
+### Notes
+- 7 new streaming chaos tests (normal completion, mid-stream kill, malformed
+  frames, error frames, empty stream, cancel-during-slow, concurrent isolation) +
+  15 in-crate streaming unit tests. Full suite: 131 Rust test functions (`cargo test`
+  green), 6 frontend smoke tests.
+- Human RC acceptance / soak checklist rows remain OPEN (unchanged by this work).
+
 ## [0.9.0-rc.1] — 2026-07-25
 
 Release Candidate for closed beta. Ground-truth re-audit fixed product-breaking Q&A identity bugs and aligned governance gates.

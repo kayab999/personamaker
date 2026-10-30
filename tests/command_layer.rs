@@ -299,3 +299,269 @@ async fn test_c6_redirect_not_followed_via_manager_client() {
 
     let _ = child.kill().await;
 }
+
+// ==================== Phase B1: streaming lifecycle over the real mock ====================
+//
+// Exercises `consume_llm_sse_stream` (the production SSE loop) against the
+// mock server's `stream_*` modes: normal completion, mid-stream RST,
+// malformed frames, mid-stream error frames, empty stream, user cancellation,
+// and concurrent-stream isolation. Emitters record into an unbounded mpsc
+// channel — mirroring what the Tauri `llm-stream` task forwards to the UI.
+// Persistence decision/policy is pinned separately in-crate
+// (`streaming_tests`); the wrapper owning persistence is thin by design.
+
+use localpersona::commands::{consume_llm_sse_stream, StreamOutcome};
+
+async fn post_stream(port: u16, mode_unused: &str) -> reqwest::Response {
+    // Any fault flavor lives server-side in the mode; the client always
+    // asks for a stream (this is exactly what stream_message_with_images does).
+    let _ = mode_unused;
+    reqwest::Client::new()
+        .post(format!("http://127.0.0.1:{}/v1/chat/completions", port))
+        .json(&serde_json::json!({
+            "model": "mock-model",
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": true,
+        }))
+        .send()
+        .await
+        .expect("stream POST must connect")
+}
+
+async fn consume_with_recorder(
+    resp: reqwest::Response,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> (
+    StreamOutcome,
+    tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>,
+) {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
+    let outcome = consume_llm_sse_stream(resp, "test-req", &cancel, move |payload| {
+        let _ = tx.send(payload);
+    })
+    .await;
+    (outcome, rx)
+}
+
+#[tokio::test]
+async fn b1_streaming_normal_completes_with_expected_content() {
+    let port = portpicker::pick_unused_port().unwrap();
+    let mut child = spawn_mock_manual(port, "normal", &[]).await;
+    wait_for_mock_ready(port).await;
+
+    let resp = post_stream(port, "normal").await;
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (outcome, mut payloads) = consume_with_recorder(resp, cancel).await;
+
+    match outcome {
+        StreamOutcome::Completed { content } => {
+            assert_eq!(
+                content, "mock reply to: streamed token deltas done",
+                "deltas must accumulate in stream order"
+            );
+        }
+        other => panic!("expected Completed, got {:?}", match other {
+            StreamOutcome::Failed { error, .. } => format!("Failed: {}", error),
+            _ => format!("{:?}", other),
+        }),
+    }
+
+    // Event telemetry: one chunk per delta, no terminal event from the loop
+    // itself (final belongs to the owning wrapper — exactly-once).
+    let mut chunks = Vec::new();
+    while let Ok(p) = payloads.try_recv() {
+        assert_eq!(p["requestId"], "test-req", "every event correlates to its request");
+        chunks.push(p["delta"].clone().to_string());
+    }
+    assert_eq!(chunks.len(), 5, "chunk events: {:?}", chunks);
+    assert_eq!(chunks[0], "\"mock reply to: \"");
+}
+
+#[tokio::test]
+async fn b1_streaming_die_mid_fails_but_preserves_partial() {
+    let port = portpicker::pick_unused_port().unwrap();
+    let mut child = spawn_mock_manual(port, "stream_die_mid", &[]).await;
+    wait_for_mock_ready(port).await;
+
+    let resp = post_stream(port, "stream_die_mid").await;
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (outcome, mut payloads) = consume_with_recorder(resp, cancel).await;
+
+    match outcome {
+        StreamOutcome::Failed { error, received } => {
+            assert_eq!(received, "Mid stream!", "partial tokens must survive a mid-stream kill");
+            assert!(!error.is_empty());
+        }
+        other => panic!("expected Failed after RST, got {:?}", other),
+    }
+
+    // Both pre-RST deltas were forwarded before the failure surfaced.
+    let mut chunk_count = 0;
+    while let Ok(p) = payloads.try_recv() {
+        assert_eq!(p["kind"], "chunk");
+        chunk_count += 1;
+    }
+    assert_eq!(chunk_count, 2, "two deltas emitted before the RST");
+    let _ = child.kill().await;
+}
+
+#[tokio::test]
+async fn b1_streaming_malformed_frames_fail() {
+    let port = portpicker::pick_unused_port().unwrap();
+    let mut child = spawn_mock_manual(port, "stream_malformed", &[]).await;
+    wait_for_mock_ready(port).await;
+
+    let resp = post_stream(port, "stream_malformed").await;
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (outcome, payloads) = consume_with_recorder(resp, cancel).await;
+
+    match outcome {
+        StreamOutcome::Failed { error, received } => {
+            assert!(received.is_empty(), "no valid delta before malformed frames");
+            assert!(error.contains("malformed stream payload"), "got: {}", error);
+        }
+        other => panic!("expected Failed on malformed SSE, got {:?}", other),
+    }
+    let _ = child.kill().await;
+}
+
+#[tokio::test]
+async fn b1_streaming_error_frame_fails_with_partial_kept() {
+    let port = portpicker::pick_unused_port().unwrap();
+    let mut child = spawn_mock_manual(port, "stream_error_frame", &[]).await;
+    wait_for_mock_ready(port).await;
+
+    let resp = post_stream(port, "stream_error_frame").await;
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (outcome, mut payloads) = consume_with_recorder(resp, cancel).await;
+
+    match outcome {
+        StreamOutcome::Failed { error, received } => {
+            assert_eq!(received, "Before error ");
+            assert_eq!(error, "mock mid-stream error");
+        }
+        other => panic!("expected Failed on error frame, got {:?}", other),
+    }
+
+    // The successful delta was still forwarded (UI shows progress before the
+    // failure) — and no Aborted state was fabricated for a server error.
+    let mut chunk_count = 0;
+    while let Ok(p) = payloads.try_recv() {
+        chunk_count += 1;
+    }
+    assert_eq!(chunk_count, 1);
+    let _ = child.kill().await;
+}
+
+#[tokio::test]
+async fn b1_streaming_empty_stream_completes_with_zero_content() {
+    let port = portpicker::pick_unused_port().unwrap();
+    let mut child = spawn_mock_manual(port, "stream_empty", &[]).await;
+    wait_for_mock_ready(port).await;
+
+    let resp = post_stream(port, "stream_empty").await;
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (outcome, mut payloads) = consume_with_recorder(resp, cancel).await;
+
+    match outcome {
+        StreamOutcome::Completed { content } => {
+            assert!(content.is_empty(), "well-formed-but-empty stream completes with \"\"");
+        }
+        other => panic!("expected Completed(empty), got {:?}", other),
+    }
+    // Policy (pinned in-crate, streaming_tests): (completed, "") → persist NOTHING.
+    assert!(payloads.try_recv().is_err(), "no chunk events for an empty stream");
+    let _ = child.kill().await;
+}
+
+#[tokio::test]
+async fn b1_streaming_cancel_during_slow_stream_aborts() {
+    let port = portpicker::pick_unused_port().unwrap();
+    let mut child = spawn_mock_manual(port, "stream_slow", &[]).await;
+    wait_for_mock_ready(port).await;
+
+    let resp = post_stream(port, "stream_slow").await;
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let cancel2 = cancel.clone();
+    // Abort shortly after the stream starts producing, like the UI stop button.
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        cancel2.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+
+    let started = std::time::Instant::now();
+    let (outcome, mut payloads) = consume_with_recorder(resp, cancel).await;
+    let elapsed = started.elapsed();
+
+    match outcome {
+        StreamOutcome::Aborted { received } => {
+            assert!(
+                !received.is_empty(),
+                "server was emitting every 200ms; at least one delta must have landed"
+            );
+        }
+        other => panic!("expected Aborted after cancel, got {:?}", other),
+    }
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "cancel must win promptly over an endless stream, took {:?}",
+        elapsed
+    );
+    let mut chunk_count = 0;
+    while let Ok(p) = payloads.try_recv() {
+        chunk_count += 1;
+    }
+    assert!(chunk_count >= 1, "user saw deltas before the abort");
+    let _ = child.kill().await;
+}
+
+#[tokio::test]
+async fn b1_streaming_concurrent_streams_no_cross_contamination() {
+    let port_a = portpicker::pick_unused_port().unwrap();
+    let port_b = portpicker::pick_unused_port().unwrap();
+    let mut child_a = spawn_mock_manual(port_a, "normal", &[]).await;
+    let mut child_b = spawn_mock_manual(port_b, "stream_die_mid", &[]).await;
+    wait_for_mock_ready(port_a).await;
+    wait_for_mock_ready(port_b).await;
+
+    let cancel_a = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let cancel_b = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let resp_a = post_stream(port_a, "normal").await;
+    let resp_b = post_stream(port_b, "stream_die_mid").await;
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(char, StreamOutcome)>();
+    let run = |tag: char, resp: reqwest::Response, cancel: std::sync::Arc<std::sync::atomic::AtomicBool>| {
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            let outcome = consume_llm_sse_stream(resp, "req", &cancel, |_| {}).await;
+            let _ = tx.send((tag, outcome));
+        })
+    };
+    run('a', resp_a, cancel_a);
+    run('b', resp_b, cancel_b);
+    drop(tx);
+
+    let mut got_a = None;
+    let mut got_b = None;
+    while let Some((tag, outcome)) = rx.recv().await {
+        match tag {
+            'a' => got_a = Some(outcome),
+            'b' => got_b = Some(outcome),
+            _ => unreachable!(),
+        }
+    }
+    match got_a {
+        Some(StreamOutcome::Completed { content }) => {
+            assert_eq!(content, "mock reply to: streamed token deltas done");
+        }
+        other => panic!("stream A expected Completed, got {:?}", other),
+    }
+    match got_b {
+        Some(StreamOutcome::Failed { received, .. }) => {
+            assert_eq!(received, "Mid stream!");
+        }
+        other => panic!("stream B expected Failed, got {:?}", other),
+    }
+    let _ = child_a.kill().await;
+    let _ = child_b.kill().await;
+}

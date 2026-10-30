@@ -25,7 +25,9 @@ const APP_STATE = {
         temperature: 0.7,
         maxTokens: 2048,
         topP: 0.9,
-        stream: false, // R2-A: streaming frozen for RC-stable (non-stream path only)
+        // Phase B1: streaming is real (stream_message_with_images + llm-stream
+        // events); users can toggle off for the batch non-stream path.
+        stream: true,
         ttsEndpoint: 'http://localhost:8081/v1/audio/speech',
         ttsModelPath: 'test-models/qwen3-tts-12hz-0.6b-customvoice-q8_0.gguf',
     },
@@ -774,7 +776,7 @@ function renderSingleMessage(msg, character) {
                 </div>
                 <div class="max-w-[78%] bg-[#1f2c34] text-gray-100 rounded-2xl rounded-tl-md px-3.5 py-2 shadow-sm">
                     <p class="text-[14.5px] leading-snug whitespace-pre-wrap">${formatMessageContent(msg.content)}</p>
-                    <span class="block text-[10px] text-gray-400 mt-1">${escapeHtml(msg.speaker_name || character.name)} · ${time}</span>
+                    <span class="block text-[10px] text-gray-400 mt-1">${escapeHtml(msg.speaker_name || character.name)} · ${time}${msg.incomplete ? ' · <span class="text-amber-500/90" title="This turn was interrupted — it is a partial response, not a final answer.">(interrupted)</span>' : ''}</span>
                 </div>
             </div>`;
     }
@@ -1260,6 +1262,10 @@ let _selectGeneration = 0;
 
 /** Bumps when a generation starts; selectCharacter + send finally check this to avoid wrong-chat UI. */
 let _inflightGenerationToken = 0;
+
+// Phase B1: exactly one live stream request per window (isGenerating gate).
+// `{ requestId, conversationId, characterId, content, pendingImagePaths }`.
+let activeStreamRequest = null;
 
 async function selectCharacter(charId) {
     // Switching contacts mid-generation: block until the in-flight request finishes
@@ -2077,6 +2083,43 @@ async function sendMessage() {
         topP: typeof s.topP === 'number' ? s.topP : 0.9,
     };
 
+    // Phase B1: streaming branch — same unified Rust pipeline (compose + RAG +
+    // identity), different transport. The backend persists user + assistant in
+    // ONE batch at stream finalize, so the composer is NOT cleared up-front:
+    // if nothing persists (failed before any content / aborted empty), the
+    // user's text stays right where it is. Terminal state is owned by the
+    // `llm-stream` final event → finalizeStreamTurn.
+    if (s.stream) {
+        try {
+            showStreamingMessage();
+            const res = await callTauri('stream_message_with_images', payload);
+            if (!res || !res.requestId) {
+                throw new Error('Streaming backend returned no requestId');
+            }
+            activeStreamRequest = {
+                requestId: res.requestId,
+                conversationId: sendConversationId,
+                characterId: sendCharacterId,
+                content: '',
+                pendingImagePaths: payload.imagePaths.slice(),
+            };
+            // Live bubble: swap dots for the accumulating text.
+            updateStreamingContent('');
+            // Send button becomes a stop control while the stream is live.
+            if (sendBtn) sendBtn.disabled = false;
+        } catch (err) {
+            // Prepare-phase failure persists nothing — restore UI; composer
+            // keeps the user text (same guarantee as the non-stream path).
+            console.error('Message stream failed (unified path):', err);
+            showToast(`Error sending message: ${err}`, 'error');
+            hideStreamingMessage();
+            APP_STATE.isGenerating = false;
+            activeStreamRequest = null;
+            if (sendBtn) sendBtn.disabled = false;
+        }
+        return;
+    }
+
     try {
         // Unified path (vision + text): Rust owns compose, RAG, persistence, Arena.
         showStreamingMessage(); // loading chrome (non-stream completion)
@@ -2312,6 +2355,94 @@ async function copyMessage(messageIndex) {
     }).catch(err => console.warn('Failed to copy:', err));
 }
 
+// ==================== Phase B1: real token streaming (frontend) ====================
+//
+// Exactly ONE `llm-stream` listener is registered at init; every event is
+// correlated by requestId against `activeStreamRequest` (single live stream by
+// construction — `isGenerating` gate). Backend payload contract (see IPC
+// schema `StreamEvent`): `{kind: chunk|stalled|final, requestId, delta?, ...}`
+// with final carrying `{status, content, incomplete, persisted, assistantId, error}`.
+
+function handleLlmStreamEvent(p) {
+    if (!p || typeof p.requestId !== 'string') return;
+    const req = activeStreamRequest;
+    if (!req || req.requestId !== p.requestId) return; // stale/unrelated stream
+
+    if (p.kind === 'chunk' && typeof p.delta === 'string') {
+        req.content += p.delta;
+        updateStreamingContent(req.content);
+    } else if (p.kind === 'stalled') {
+        showToast('Inference stalled — if the server is hung, stop the stream and resend.', 'info');
+    } else if (p.kind === 'final') {
+        finalizeStreamTurn(p);
+    }
+}
+
+async function finalizeStreamTurn(p) {
+    const req = activeStreamRequest;
+    activeStreamRequest = null;
+    APP_STATE.isGenerating = false;
+    const sendBtn = document.getElementById('sendBtn');
+    if (sendBtn) {
+        sendBtn.disabled = false;
+        sendBtn.setAttribute('aria-label', 'Send message');
+    }
+    hideStreamingMessage();
+    if (!req) return;
+
+    const samePlace = APP_STATE.activeCharacterId === req.characterId
+        && currentConversationId === req.conversationId;
+
+    if (p.persisted) {
+        // Backend appended user + assistant (assistant possibly incomplete).
+        // NOW the composer can clear — the sent content is durable on disk.
+        const input = document.getElementById('chatInput');
+        if (input) {
+            input.value = '';
+            input.style.height = 'auto';
+        }
+        const hint = document.getElementById('charCountHint');
+        if (hint) hint.classList.add('hidden');
+        if (Array.isArray(req.pendingImagePaths) && req.pendingImagePaths.length) {
+            clearPendingImages();
+        }
+        if (samePlace) {
+            await updateChatView();
+            updateContextUsagePill();
+        }
+        updateLoadEarlierButton(window.currentConversationHasMore);
+    }
+
+    if (p.status === 'failed') {
+        showToast(
+            p.persisted
+                ? `Streaming failed${p.error ? `: ${p.error}` : ''}. Received text was kept in the transcript.`
+                : `Streaming failed${p.error ? `: ${p.error}` : ''}. Nothing was generated.`,
+            'error'
+        );
+    } else if (p.status === 'aborted') {
+        showToast(p.persisted ? 'Generation stopped. Received text was kept.' : 'Generation stopped before any text arrived.', 'info');
+    } else if (p.status === 'completed' && p.incomplete === true) {
+        // Defensive: a completed status must never carry the incomplete flag.
+        console.warn('llm-stream final: completed turn flagged incomplete — treating as complete.');
+    }
+}
+
+// Stop button semantics: while a stream is live the send button aborts it.
+async function dispatchSendOrStop() {
+    if (activeStreamRequest) {
+        try {
+            const live = await callTauri('abort_inference_stream', { requestId: activeStreamRequest.requestId });
+            // `live === false` → already finalized; the final event owns the UI.
+            if (live) showToast('Stop requested…', 'info');
+        } catch (e) {
+            console.error('Abort failed:', e);
+        }
+        return;
+    }
+    return sendMessage();
+}
+
 function showStreamingMessage() {
     const streamingEl = document.getElementById('streamingMessage');
     streamingEl.classList.remove('hidden');
@@ -2541,20 +2672,24 @@ function applySettingsToUI() {
         ttsModelInput.value = s.ttsModelPath;
     }
 
-    // R2-A: stream toggle is frozen OFF for RC-stable
-    if (APP_STATE.settings) APP_STATE.settings.stream = false;
+    // Phase B1: streaming toggle is real — reflect the saved setting.
     const toggle = document.getElementById('streamToggle');
     if (toggle) {
-        const toggleKnob = toggle.querySelector('span');
-        toggle.disabled = true;
-        toggle.classList.remove('bg-accent');
-        toggle.classList.add('bg-gray-600');
-        if (toggleKnob) {
-            toggleKnob.classList.remove('translate-x-5');
-            toggleKnob.classList.add('translate-x-0');
+        const checked = !!APP_STATE.settings.stream;
+        toggle.disabled = false;
+        toggle.classList.remove('cursor-not-allowed');
+        toggle.classList.toggle('bg-accent', checked);
+        toggle.classList.toggle('bg-gray-600', !checked);
+        const knob = toggle.querySelector('span');
+        if (knob) {
+            knob.classList.toggle('translate-x-5', checked);
+            knob.classList.toggle('translate-x-0', !checked);
         }
-        toggle.setAttribute('aria-checked', 'false');
-        toggle.setAttribute('aria-disabled', 'true');
+        toggle.setAttribute('aria-checked', checked ? 'true' : 'false');
+        toggle.removeAttribute('aria-disabled');
+        toggle.title = checked
+            ? 'Streaming is ON — tokens arrive live; the send button stops a running stream.'
+            : 'Streaming is OFF — responses arrive as complete messages.';
     }
 }
 
@@ -2565,8 +2700,8 @@ function saveSettings() {
     APP_STATE.settings.temperature = parseFloat(document.getElementById('temperatureSlider').value);
     APP_STATE.settings.maxTokens = parseInt(document.getElementById('maxTokensInput').value) || 2048;
     APP_STATE.settings.topP = parseFloat(document.getElementById('topPSlider').value);
-    // R2-A: never persist stream=true in this RC
-    APP_STATE.settings.stream = false;
+    // Phase B1: streaming persists like any other user preference.
+    APP_STATE.settings.stream = document.getElementById('streamToggle')?.getAttribute('aria-checked') === 'true';
 
     // Voice / TTS settings
     const ttsEndpoint = document.getElementById('ttsEndpointInput');
@@ -3592,6 +3727,16 @@ function setupEventListeners() {
         window.__TAURI__.event.listen('show-help', () => {
             showHelpModal();
         });
+
+        // Phase B1: the SINGLE llm-stream listener. Every stream (registered
+        // in sendMessage) correlates by requestId; stale events are dropped.
+        window.__TAURI__.event.listen('llm-stream', (ev) => {
+            try {
+                handleLlmStreamEvent(ev && ev.payload);
+            } catch (e) {
+                console.error('llm-stream dispatch failed:', e);
+            }
+        });
     }
 
     // Character editor (primary binds also near end via bindClick — avoid double-bind here)
@@ -3741,7 +3886,8 @@ function setupEventListeners() {
 
     document.getElementById('cancelDeleteBtn').addEventListener('click', closeConfirmDelete);
 
-    bindClick('sendBtn', sendMessage);
+    // Phase B1: send button doubles as the stream stop control.
+    bindClick('sendBtn', dispatchSendOrStop);
     bindClick('regenerateBtn', regenerateLastResponse);
 
     const chatInput = document.getElementById('chatInput');
@@ -3783,12 +3929,26 @@ function setupEventListeners() {
         document.getElementById('topPValue').textContent = parseFloat(e.target.value).toFixed(2);
     });
 
-    // R2-A: streaming frozen — ignore clicks; keep toggle off
-    document.getElementById('streamToggle')?.addEventListener('click', (e) => {
-        e.preventDefault();
-        showToast('Streaming is disabled in this RC. Responses arrive as complete messages.', 'info');
-        APP_STATE.settings.stream = false;
-    });
+    // Phase B1: streaming toggle flips the local state + visual; persisted
+    // with Save like every other control (single persistence path).
+    const streamToggle = document.getElementById('streamToggle');
+    if (streamToggle) {
+        streamToggle.addEventListener('click', () => {
+            const nowOn = streamToggle.getAttribute('aria-checked') !== 'true';
+            streamToggle.setAttribute('aria-checked', nowOn ? 'true' : 'false');
+            streamToggle.classList.toggle('bg-accent', nowOn);
+            streamToggle.classList.toggle('bg-gray-600', !nowOn);
+            const knob = streamToggle.querySelector('span');
+            if (knob) {
+                knob.classList.toggle('translate-x-5', nowOn);
+                knob.classList.toggle('translate-x-0', !nowOn);
+            }
+            APP_STATE.settings.stream = nowOn;
+            streamToggle.title = nowOn
+                ? 'Streaming is ON — tokens arrive live; the send button stops a running stream.'
+                : 'Streaming is OFF — responses arrive as complete messages.';
+        });
+    }
 
     document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape') {

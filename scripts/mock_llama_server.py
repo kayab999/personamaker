@@ -216,6 +216,84 @@ class H(BaseHTTPRequestHandler):
         else:
             self._send(404, b'{"error":"not found"}')
 
+    def _handle_chat_stream(self, req_body: bytes, mode: str) -> None:
+        """Phase B1: deterministic SSE responses for streaming requests."""
+        _ctl_log({"mode": "stream:" + mode, "path": self.path})
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+
+        def data(chunk: dict) -> bytes:
+            return b"data: " + json.dumps(chunk).encode() + b"\n\n"
+
+        def content_chunk(delta: str, finish=None) -> bytes:
+            obj = {
+                "id": "mock-stream-1",
+                "object": "chat.completion.chunk",
+                "created": int(time.time()),
+                "model": "mock-model",
+                "choices": [{"index": 0, "delta": {"content": delta}}],
+            }
+            if finish is not None:
+                obj["choices"][0]["finish_reason"] = finish
+            return data(obj)
+
+        def send_bytes(b: bytes) -> bool:
+            try:
+                self.wfile.write(b)
+                self.wfile.flush()
+                return True
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                # Client went away (abort / disconnect tests): stop writing.
+                return False
+
+        if mode == "stream_empty":
+            # Well-formed stream with zero content: [DONE] only.
+            # Pins the fail-closed "no empty assistant rows" contract.
+            send_bytes(b"data: [DONE]\n\n")
+            return
+
+        if mode == "stream_die_mid":
+            # Emit two tokens, then RST before any finish/[DONE].
+            if send_bytes(content_chunk("Mid ")):
+                send_bytes(content_chunk("stream!"))
+            self._rst_close()
+            return
+
+        if mode == "stream_malformed":
+            send_bytes(b"data: {not-json{{{ broke\n\n")
+            send_bytes(b"data: ~~~~garbage-line~~~~\n\n")
+            send_bytes(data({"choices": [{"index": 0, "delta": {}}]}))
+            send_bytes(b"data: [DONE]\n\n")
+            return
+
+        if mode == "stream_error_frame":
+            send_bytes(content_chunk("Before error "))
+            send_bytes(data({"error": {"message": "mock mid-stream error"}}))
+            return
+
+        if mode == "stream_slow":
+            # Falls off forever until the client disconnects (cancel test).
+            try:
+                for i in range(10 ** 6):
+                    self.wfile.write(content_chunk(f"tok{i} "))
+                    self.wfile.flush()
+                    time.sleep(0.2)
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
+            return
+
+        # Default deterministic stream for normal/any other mode:
+        for token in ("mock reply to: ", "streamed ", "token ", "deltas ", "done"):
+            if not send_bytes(content_chunk(token)):
+                return
+        # Terminal frame mirrors llama.cpp: delta {} + finish_reason, no content.
+        if send_bytes(data({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})):
+            send_bytes(b"data: [DONE]\n\n")
+
     def do_POST(self):
         n = int(self.headers.get("Content-Length") or 0)
         req_body = self.rfile.read(n) if n else b""
@@ -268,6 +346,19 @@ class H(BaseHTTPRequestHandler):
 
         if m == "500":
             self._send(500, b'{"error":"mock 500"}')
+            return
+
+        # ---------- Phase B1: streaming (SSE) support ----------
+        # Any /v1/chat/completions request with stream:true gets a
+        # deterministic SSE response; `stream_*` modes control the
+        # failure/abort flavors used by the Tribunal chaos tests. Non-stream
+        # requests keep the exact legacy completion behavior below.
+        try:
+            stream_flag = bool(json.loads(req_body or b"{}").get("stream"))
+        except Exception:
+            stream_flag = False
+        if stream_flag:
+            self._handle_chat_stream(req_body, m)
             return
 
         if m == "503":
@@ -384,6 +475,12 @@ def main():
             "relaylog",
             "empty_choices",
             "wrongshape",
+            # Phase B1: SSE streaming flavors (_handle_chat_stream)
+            "stream_die_mid",
+            "stream_malformed",
+            "stream_error_frame",
+            "stream_slow",
+            "stream_empty",
         ],
     )
     p.add_argument("--redirect-url", default="http://127.0.0.1:8099/v1/chat/completions",

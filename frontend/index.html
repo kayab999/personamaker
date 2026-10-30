@@ -507,12 +507,12 @@
                     <label class="block text-xs font-medium text-gray-400 mb-1.5">Top-P: <span id="topPValue">0.9</span></label>
                     <input type="range" id="topPSlider" min="0" max="1" step="0.05" value="0.9" class="w-full accent-accent h-2 rounded-lg cursor-pointer">
                 </div>
-                <div class="flex items-center justify-between opacity-60" title="Token streaming ships in a post-RC release. Responses currently arrive as complete messages.">
+                <div class="flex items-center justify-between" title="Stream responses from llama-server token by token. The send button turns into a Stop control while a stream is running.">
                     <div>
                         <span class="text-xs font-medium text-gray-400">Stream Responses</span>
-                        <div class="text-[10px] text-amber-500/90">Coming post-RC — non-stream is stable default</div>
+                        <div class="text-[10px] text-gray-500">Live tokens — experimental; turn off to batch-complete</div>
                     </div>
-                    <button id="streamToggle" disabled class="relative w-11 h-6 rounded-full bg-gray-600 transition-colors duration-200 cursor-not-allowed" role="switch" aria-checked="false" aria-disabled="true">
+                    <button id="streamToggle" class="relative w-11 h-6 rounded-full bg-gray-600 transition-colors duration-200" role="switch" aria-checked="false">
                         <span class="absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform duration-200 translate-x-0"></span>
                     </button>
                 </div>

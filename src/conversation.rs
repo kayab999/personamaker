@@ -12,7 +12,8 @@ use tauri::AppHandle;
 use tauri::Manager;
 
 use crate::storage::{atomic_write, atomic_write_bytes};
-use fs2::FileExt;
+// NOTE (Phase A hygiene): fs2 file locking lives in storage.rs
+// (atomic_write_with_lock); conversation.rs itself does not use FileExt.
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageReference {
@@ -37,6 +38,13 @@ pub struct ChatMessage {
     /// Estimated token count for this message (Phase 1 - Context Management)
     #[serde(default)]
     pub token_count: usize,
+    /// True only when the assistant turn is a partial/persisted fragment of a
+    /// stream that was aborted or failed mid-generation (Phase B1 lifecycle
+    /// `ABORTED` / `FAILED`). Complete turns NEVER set this flag. `#[serde(default)]`
+    /// keeps older NDJSON files loadable; loaders that fold revisions must
+    /// treat these turns as explicitly non-final.
+    #[serde(default)]
+    pub incomplete: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -914,6 +922,7 @@ mod tests {
             role: "user".into(),
             images: vec![],
             token_count: 0, // will be estimated
+        incomplete: false,
         };
         let msg2 = ChatMessage {
             id: "m2".into(),
@@ -925,6 +934,7 @@ mod tests {
             role: "assistant".into(),
             images: vec![],
             token_count: 0,
+        incomplete: false,
         };
 
         let mut f = std::fs::OpenOptions::new().append(true).open(&msg_path).unwrap();
@@ -1039,6 +1049,7 @@ mod tests {
                 role: "user".into(),
                 images: vec![],
                 token_count: 0,
+        incomplete: false,
             };
             writeln!(file, "{}", serde_json::to_string(&msg).unwrap()).unwrap();
         }
@@ -1067,6 +1078,7 @@ mod tests {
                 role: "user".into(),
                 images: vec![],
                 token_count: 1,
+            incomplete: false,
             },
             ChatMessage {
                 id: "a1".into(),
@@ -1078,6 +1090,7 @@ mod tests {
                 role: "assistant".into(),
                 images: vec![],
                 token_count: 1,
+            incomplete: false,
             },
             ChatMessage {
                 id: "u2".into(),
@@ -1089,6 +1102,7 @@ mod tests {
                 role: "user".into(),
                 images: vec![],
                 token_count: 1,
+            incomplete: false,
             },
             ChatMessage {
                 id: "a2".into(),
@@ -1100,6 +1114,7 @@ mod tests {
                 role: "assistant".into(),
                 images: vec![],
                 token_count: 1,
+            incomplete: false,
             },
         ];
         let kept = truncate_after_last_user(&msgs);
@@ -1120,6 +1135,7 @@ mod tests {
                 role: "user".into(),
                 images: vec![],
                 token_count: 20,
+                incomplete: false,
             })
             .collect();
         let taken = take_messages_within_token_budget(&msgs, 50);

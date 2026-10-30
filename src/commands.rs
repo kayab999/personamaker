@@ -45,6 +45,118 @@ pub fn build_http_client() -> reqwest::Client {
 }
 static HTTP_CLIENT: once_cell::sync::Lazy<reqwest::Client> = once_cell::sync::Lazy::new(|| build_http_client());
 
+// ==================== Phase B1: real token streaming ====================
+//
+// Lifecycle contract (see docs/adr/ADR-0002 or AGENTS handover):
+//   PENDING → STREAMING → COMPLETED | FAILED | ABORTED
+// - COMPLETED: SSE reached `data: [DONE]` (or finish_reason before it).
+// - ABORTED: user/caller cancelled mid-stream.
+// - FAILED: transport/protocol error before or mid-stream.
+// Terminal exactly-once finalization: the owning task performs persistence
+// and emits one `llm-stream` final event; nothing re-enters after that.
+//
+// Persistence policy (preserves "no empty assistant rows"):
+// - COMPLETED: user + assistant batch append (identical to non-stream).
+// - FAILED/ABORTED with received text: user + assistant appended with
+//   `incomplete: true` (explicit, machine-readable, never rendered as final).
+// - FAILED/ABORTED with zero received text: NOTHING is appended (fail closed).
+
+/// Streaming client: no total request timeout (generation can run minutes).
+/// Liveness is enforced per-chunk by the stream loop's idle timeout instead.
+fn build_stream_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap_or_else(|e| {
+            log::error!("Failed to build stream HTTP client ({}), using default", e);
+            reqwest::Client::new()
+        })
+}
+static STREAM_HTTP_CLIENT: once_cell::sync::Lazy<reqwest::Client> =
+    once_cell::sync::Lazy::new(|| build_stream_http_client());
+
+/// Idle cap between stream bytes (llama.cpp sends keepalive comments, so a
+/// live server keeps chunks coming; a hung/dead worker trips this).
+const STREAM_IDLE_CHUNK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Cancellation poll cadence inside the select! loop (responsiveness of
+/// abort_inference_stream even while blocked reading idle bytes).
+const STREAM_CANCEL_POLL: std::time::Duration = std::time::Duration::from_millis(150);
+
+/// Cancellation registry keyed by request id. The stream loop polls the flag
+/// every `STREAM_CANCEL_POLL_MS` inside a tokio select!, so cancellation is
+/// responsive even while blocked reading idle bytes.
+struct StreamHandle {
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+static STREAM_REGISTRY: once_cell::sync::Lazy<std::sync::Mutex<std::collections::HashMap<String, StreamHandle>>> =
+    once_cell::sync::Lazy::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+fn register_stream(request_id: &str) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    match STREAM_REGISTRY.lock() {
+        Ok(mut map) => {
+            map.insert(
+                request_id.to_string(),
+                StreamHandle { cancel: cancel.clone() },
+            );
+        }
+        Err(e) => {
+            log::error!("STREAM_REGISTRY poisoned: {}", e);
+            // Registry unusable — the owning task still holds its `cancel`
+            // Arc, so persistence is unaffected; only mid-stream abort via
+            // `abort_inference_stream` would fail to be observed.
+        }
+    }
+    cancel
+}
+
+fn cancel_stream_request(request_id: &str) -> bool {
+    match STREAM_REGISTRY.lock() {
+        Ok(map) => match map.get(request_id) {
+            Some(handle) => {
+                handle
+                    .cancel
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                true
+            }
+            None => false,
+        },
+        Err(e) => {
+            log::error!("STREAM_REGISTRY poisoned: {}", e);
+            false
+        }
+    }
+}
+
+fn unregister_stream(request_id: &str) {
+    if let Ok(mut map) = STREAM_REGISTRY.lock() {
+        map.remove(request_id);
+    }
+}
+
+/// Terminal states for the streaming lifecycle; exactly-once finalization
+/// funnels every outcome through one code path below. Public as the
+/// integration-test seam (`consume_llm_sse_stream` returns it); not a wire type.
+#[derive(Debug)]
+pub enum StreamOutcome {
+    Completed {
+        content: String,
+    },
+    Aborted {
+        received: String,
+    },
+    Failed {
+        error: String,
+        received: String,
+    },
+    /// Nothing reached the server (compose/prepare failed before any I/O).
+    NotStarted {
+        error: String,
+    },
+}
+
 /// FIX-SEC03: Validates that an inference API base URL is localhost-only (SSRF prevention).
 /// Returns the validated URL or an error if it points to a non-local host.
 /// Accepts: http://127.0.0.1:*, http://localhost:*, http://[::1]:*
@@ -339,8 +451,8 @@ use base64::Engine;
 /// Spawns a background task for the actual respawn so the current request is not blocked.
 /// Phase 1.5: Checks if Arena Reset is needed after a successful inference call.
 /// Uses try_lock to prevent concurrent resets from multiple rapid requests.
-fn check_arena_reset(state: &tauri::State<'_, SharedLlamaServer>) {
-    let server = state.inner().clone();
+fn check_arena_reset(state: &SharedLlamaServer) {
+    let server = state.clone();
     tokio::spawn(async move {
         let reason = match server.try_lock() {
             Ok(mut manager) => {
@@ -615,7 +727,7 @@ fn is_reserved_speaker_role(id: &str) -> bool {
 // Single implementation for token budget, history load, compose+RAG, and HTTP completion.
 // send_message_with_images and regenerate_last_message both call these helpers.
 
-async fn inference_token_budget(state: &tauri::State<'_, SharedLlamaServer>) -> usize {
+async fn inference_token_budget(state: &SharedLlamaServer) -> usize {
     let mgr = state.lock().await;
     // Reserve headroom for system prompt + RAG + the current user turn (not just history).
     // ~55% of model context for history keeps compose/RAG from overflowing small models.
@@ -732,8 +844,69 @@ fn take_rag_status_snapshot() -> serde_json::Value {
 
 /// Shared non-stream chat completion against the local llama-server.
 /// On worker death detection, attempts a single auto-restart then retries the HTTP call once.
+/// Acquires the chat/completions endpoint under the manager lock, performing
+/// health check + (on the first attempt) auto-restart after worker death.
+/// Extracted verbatim from the previous `post_chat_completion` lock block so
+/// the streaming path shares identical manager/identity semantics.
+async fn acquire_chat_endpoint(
+    state: &SharedLlamaServer,
+    attempt: u8,
+) -> Result<(String, Option<String>), String> {
+    let mut attempt = attempt;
+    loop {
+        let mut manager = state.lock().await;
+        let crashed = manager.check_health();
+        if crashed {
+            if attempt == 0 && manager.auto_restart_if_needed() {
+                if let Some(req) = manager.last_start_request.clone() {
+                    // Serialize restart with is_resetting to avoid dual spawn
+                    if !manager.is_resetting {
+                        manager.is_resetting = true;
+                        let model = req.model_path.display().to_string();
+                        let cb_key = format!("auto_restart_{}", model);
+                        log::info!("acquire_chat_endpoint: auto-restarting after worker death…");
+                        let start_res = manager.start(req).await;
+                        manager.is_resetting = false;
+                        match start_res {
+                            Ok(_) => {
+                                crate::circuit_breaker::record_success(&cb_key);
+                                // brief settle — readiness is best-effort
+                                drop(manager);
+                                tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+                                // Equivalent to the old loop `continue` (attempt now 1).
+                                attempt = 1;
+                                continue;
+                            }
+                            Err(e) => {
+                                crate::circuit_breaker::record_failure(&cb_key);
+                                return Err(format!(
+                                    "Inference server died and auto-restart failed: {}",
+                                    e
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            return Err(
+                "Inference server died unexpectedly (possible OOM or external kill). Please restart the server."
+                    .to_string(),
+            );
+        }
+        let status = manager.status();
+        if !status.running {
+            return Err("Inference server is not running".to_string());
+        }
+        let api_base = status.api_base.ok_or("No API base URL")?;
+        validate_localhost_endpoint(&api_base)?;
+        // P1-4: session Bearer key (server started with --api-key).
+        let session_key = manager.api_key();
+        return Ok((format!("{}/chat/completions", api_base), session_key));
+    }
+}
+
 async fn post_chat_completion(
-    state: &tauri::State<'_, SharedLlamaServer>,
+    state: &SharedLlamaServer,
     messages: Vec<serde_json::Value>,
     temperature: Option<f64>,
     max_tokens: Option<u32>,
@@ -753,54 +926,11 @@ async fn post_chat_completion(
 
     let mut last_err = String::new();
     for attempt in 0..2u8 {
-        let (endpoint, session_key) = {
-            let mut manager = state.lock().await;
-            let crashed = manager.check_health();
-            if crashed {
-                if attempt == 0 && manager.auto_restart_if_needed() {
-                    if let Some(req) = manager.last_start_request.clone() {
-                        // Serialize restart with is_resetting to avoid dual spawn
-                        if !manager.is_resetting {
-                            manager.is_resetting = true;
-                            let model = req.model_path.display().to_string();
-                            let cb_key = format!("auto_restart_{}", model);
-                            log::info!("post_chat_completion: auto-restarting after worker death…");
-                            let start_res = manager.start(req).await;
-                            manager.is_resetting = false;
-                            match start_res {
-                                Ok(_) => {
-                                    crate::circuit_breaker::record_success(&cb_key);
-                                    // brief settle — readiness is best-effort
-                                    drop(manager);
-                                    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
-                                    continue;
-                                }
-                                Err(e) => {
-                                    crate::circuit_breaker::record_failure(&cb_key);
-                                    return Err(format!(
-                                        "Inference server died and auto-restart failed: {}",
-                                        e
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                }
-                return Err(
-                    "Inference server died unexpectedly (possible OOM or external kill). Please restart the server."
-                        .to_string(),
-                );
-            }
-            let status = manager.status();
-            if !status.running {
-                return Err("Inference server is not running".to_string());
-            }
-            let api_base = status.api_base.ok_or("No API base URL")?;
-            validate_localhost_endpoint(&api_base)?;
-            // P1-4: session Bearer key (server started with --api-key).
-            let session_key = manager.api_key();
-            (format!("{}/chat/completions", api_base), session_key)
-        };
+        let (endpoint, session_key) = acquire_chat_endpoint(
+            state,
+            attempt,
+        )
+        .await?;
 
         let mut req = HTTP_CLIENT
             .clone()
@@ -883,29 +1013,79 @@ async fn post_chat_completion(
     })
 }
 
-/// Send a user turn (optional images) through the full inference pipeline.
-///
-/// `character_id` owns personality/RAG (RC identity contract). Prefer it over `speaker_id`.
-/// `speaker_id` / `speaker_name` are user attribution only for the stored user message.
-/// Sampling: `temperature`, `max_tokens`, `top_p` from UI settings (clamped).
-#[command]
-pub async fn send_message_with_images(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, SharedLlamaServer>,
+/// Shared prepared state for the send/stream pipelines (Phase B1 refactor of
+/// the Phase B7 unified path — one preparation, two completion transports).
+struct PreparedSend {
+    /// Complete chat payload incl. system + RAG + history + user turn.
+    messages: Vec<serde_json::Value>,
+    /// Identity contract owner for the assistant attribution.
+    resolved_character_id: String,
+    assistant_display_name: String,
+    /// Pre-built user message, persisted on finalization only.
+    user_msg: crate::conversation::ChatMessage,
+    /// Wall-clock shared by both persisted messages.
+    now: u64,
+}
+
+/// Field-level snapshot taken BEFORE any field of `PreparedSend` is moved
+/// into the transport; lets callers keep constructing assistant turns after
+/// ownership of `messages`/`user_msg` changed hands (Rust field-partial-move
+/// rules forbid borrowing the whole struct afterwards).
+struct AssistantMeta {
     conversation_id: String,
-    speaker_id: String,
-    speaker_name: String,
+    character_id: String,
+    display_name: String,
+    now: u64,
+}
+
+impl AssistantMeta {
+    fn from_prepared(prepared: &PreparedSend) -> Self {
+        Self {
+            conversation_id: prepared.user_msg.conversation_id.clone(),
+            character_id: prepared.resolved_character_id.clone(),
+            display_name: prepared.assistant_display_name.clone(),
+            now: prepared.now,
+        }
+    }
+}
+
+fn build_assistant_msg(
+    meta: &AssistantMeta,
+    content: String,
+    incomplete: bool,
+) -> crate::conversation::ChatMessage {
+    crate::conversation::ChatMessage {
+        id: uuid::Uuid::new_v4().to_string(),
+        conversation_id: meta.conversation_id.clone(),
+        speaker_id: meta.character_id.clone(),
+        speaker_name: meta.display_name.clone(),
+        content,
+        timestamp: meta.now,
+        role: "assistant".to_string(),
+        images: vec![],
+        token_count: 0, // estimated in append_message
+        incomplete,
+    }
+}
+
+/// Steps 1–3 of the unified inference pipeline: identity resolution, token
+/// budget history walk, image validation/encoding, compose + RAG, payload
+/// assembly. Shared verbatim (was inline in `send_message_with_images`) so the
+/// streaming command cannot diverge from the non-stream contract.
+async fn prepare_send_pipeline(
+    app: &tauri::AppHandle,
+    state: &SharedLlamaServer,
+    conversation_id: &str,
+    speaker_id: &str,
+    speaker_name: &str,
     text_content: String,
-    image_paths: Vec<String>,   // relative paths like "images/abc123.png"
+    image_paths: Vec<String>,
     character_id: Option<String>,
-    temperature: Option<f64>,
-    max_tokens: Option<u32>,
-    top_p: Option<f64>,
-) -> Result<String, String> {
-    crate::conversation::validate_conv_id(&conversation_id)?;
+) -> Result<PreparedSend, String> {
+    crate::conversation::validate_conv_id(conversation_id)?;
 
     // Resolve character for compose + RAG (never use role label "user" as a character file key).
-    let meta_for_ids = crate::conversation::load_metadata(&app, &conversation_id)?;
+    let meta_for_ids = crate::conversation::load_metadata(app, conversation_id)?;
     let participant_ids = meta_for_ids
         .as_ref()
         .map(|m| m.participant_ids.clone())
@@ -913,12 +1093,12 @@ pub async fn send_message_with_images(
     let resolved_character_id = resolve_character_id_for_inference(
         character_id.as_deref(),
         &participant_ids,
-        &speaker_id,
+        speaker_id,
     )?;
 
     // 1. Load recent history (shared budget helper — Phase B7)
-    let budget = inference_token_budget(&state).await;
-    let history_messages = load_history_for_inference(&app, &conversation_id, budget).await?;
+    let budget = inference_token_budget(state).await;
+    let history_messages = load_history_for_inference(app, conversation_id, budget).await?;
 
     // 2. Build vision content array
     let mut content = Vec::new();
@@ -936,7 +1116,7 @@ pub async fn send_message_with_images(
 
     let mut total_image_bytes: usize = 0;
     for rel_path in &image_paths {
-        let full_path = crate::storage::get_absolute_path(&app, rel_path)?;
+        let full_path = crate::storage::get_absolute_path(app, rel_path)?;
         let metadata = std::fs::metadata(&full_path)
             .map_err(|e| format!("Failed to read image metadata for {}: {}", rel_path, e))?;
         let file_size = metadata.len() as usize;
@@ -950,7 +1130,7 @@ pub async fn send_message_with_images(
     }
 
     for rel_path in &image_paths {
-        let full_path = crate::storage::get_absolute_path(&app, rel_path)?;
+        let full_path = crate::storage::get_absolute_path(app, rel_path)?;
         let bytes = std::fs::read(&full_path)
             .map_err(|e| format!("Failed to read image {}: {}", rel_path, e))?;
 
@@ -970,7 +1150,7 @@ pub async fn send_message_with_images(
     // 3. Compose + RAG + history (shared pipeline — Phase B7)
     let has_images = !image_paths.is_empty();
     let (system_prompt, assistant_display_name) = compose_system_with_rag(
-        &app,
+        app,
         &resolved_character_id,
         &text_content,
         &history_messages,
@@ -990,18 +1170,6 @@ pub async fn send_message_with_images(
         "content": content
     }));
 
-    // 4. HTTP completion (shared helper — lock dropped before I/O)
-    let assistant_content = post_chat_completion(
-        &state,
-        messages,
-        temperature,
-        max_tokens,
-        top_p,
-        "local-vlm",
-    )
-    .await?;
-
-    // 5. Store both messages only after a non-empty successful completion.
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -1009,9 +1177,9 @@ pub async fn send_message_with_images(
 
     let user_msg = crate::conversation::ChatMessage {
         id: uuid::Uuid::new_v4().to_string(),
-        conversation_id: conversation_id.clone(),
-        speaker_id: speaker_id.clone(),
-        speaker_name: speaker_name.clone(),
+        conversation_id: conversation_id.to_string(),
+        speaker_id: speaker_id.to_string(),
+        speaker_name: speaker_name.to_string(),
         content: text_content,
         timestamp: now,
         role: "user".to_string(),
@@ -1023,31 +1191,562 @@ pub async fn send_message_with_images(
             height: None,
         }).collect(),
         token_count: 0, // will be estimated in append_message
+        incomplete: false,
     };
 
-    let assistant_msg = crate::conversation::ChatMessage {
-        id: uuid::Uuid::new_v4().to_string(),
-        conversation_id: conversation_id.clone(),
-        speaker_id: resolved_character_id.clone(),
-        speaker_name: assistant_display_name,
-        content: assistant_content.clone(),
-        timestamp: now,
-        role: "assistant".to_string(),
-        images: vec![],
-        token_count: 0,
-    };
+    Ok(PreparedSend {
+        messages,
+        resolved_character_id,
+        assistant_display_name,
+        user_msg,
+        now,
+    })
+}
+
+/// Send a user turn (optional images) through the full inference pipeline.
+///
+/// `character_id` owns personality/RAG (RC identity contract). Prefer it over `speaker_id`.
+/// `speaker_id` / `speaker_name` are user attribution only for the stored user message.
+/// Sampling: `temperature`, `max_tokens`, `top_p` from UI settings (clamped).
+#[command]
+pub async fn send_message_with_images(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SharedLlamaServer>,
+    conversation_id: String,
+    speaker_id: String,
+    speaker_name: String,
+    text_content: String,
+    image_paths: Vec<String>,   // relative paths like "images/abc123.png"
+    character_id: Option<String>,
+    temperature: Option<f64>,
+    max_tokens: Option<u32>,
+    top_p: Option<f64>,
+) -> Result<String, String> {
+    let prepared = prepare_send_pipeline(
+        &app,
+        state.inner(),
+        &conversation_id,
+        &speaker_id,
+        &speaker_name,
+        text_content,
+        image_paths,
+        character_id,
+    )
+    .await?;
+
+    // Identity snapshot BEFORE moving message payload in (partial-move rules).
+    let meta = AssistantMeta::from_prepared(&prepared);
+
+    // 4. HTTP completion (shared helper — lock dropped before I/O)
+    let assistant_content = post_chat_completion(
+        state.inner(),
+        prepared.messages,
+        temperature,
+        max_tokens,
+        top_p,
+        "local-vlm",
+    )
+    .await?;
+
+    // 5. Store both messages only after a non-empty successful completion.
+    let assistant_msg = build_assistant_msg(&meta, assistant_content.clone(), false);
 
     // Single batch write: both lines under one ndjson lock (no orphan user-only turn).
     crate::conversation::append_messages(
         &app,
         &conversation_id,
-        &[user_msg, assistant_msg],
+        &[prepared.user_msg, assistant_msg],
     )?;
 
     // Phase 1.5: Track usage and auto-respawn if threshold hit
-    check_arena_reset(&state);
+    check_arena_reset(state.inner());
 
     Ok(assistant_content)
+}
+
+/// Parses one `data: <payload>` SSE body into a protocol event. Pure and
+/// unit-tested; tolerant to llama.cpp keepalive comments (`: ping - 1.23`),
+/// empty lines, role-only first chunks, per-chunk error objects, and the
+/// final `[DONE]` sentinel.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StreamChunkOut {
+    pub delta: Option<String>,
+    pub finish_reason: Option<String>,
+    pub done: bool,
+    pub error: Option<String>,
+    pub ignored: bool,
+}
+
+pub fn parse_stream_chunk(payload: &str) -> StreamChunkOut {
+    let ignored = StreamChunkOut {
+        delta: None,
+        finish_reason: None,
+        done: false,
+        error: None,
+        ignored: true,
+    };
+    let p = payload.trim();
+    if p.is_empty() {
+        return ignored;
+    }
+    if p == "[DONE]" {
+        return StreamChunkOut {
+            delta: None,
+            finish_reason: None,
+            done: true,
+            error: None,
+            ignored: false,
+        };
+    }
+    let v = match serde_json::from_str::<serde_json::Value>(p) {
+        Ok(v) => v,
+        Err(e) => {
+            let mut head = String::new();
+            for c in p.chars().take(120) {
+                head.push(c);
+            }
+            return StreamChunkOut {
+                delta: None,
+                finish_reason: None,
+                done: false,
+                error: Some(format!("malformed stream payload {}: {}", head, e)),
+                ignored: false,
+            };
+        }
+    };
+    // Error frames: `{"error": "…"}` or `{"error":{"message":"…"}}`.
+    if let Some(err) = v.get("error") {
+        let msg = err
+            .as_str()
+            .map(|s| s.to_string())
+            .or_else(|| err.get("message").and_then(|m| m.as_str()).map(|s| s.to_string()))
+            .unwrap_or_else(|| err.to_string());
+        return StreamChunkOut {
+            delta: None,
+            finish_reason: None,
+            done: false,
+            error: Some(msg),
+            ignored: false,
+        };
+    }
+    let choice = &v["choices"][0];
+    if choice.is_null() {
+        return ignored; // keepalive / stats-only frame
+    }
+    let delta = choice["delta"]["content"]
+        .as_str()
+        .map(|s| s.to_string());
+    let finish_reason = choice["finish_reason"]
+        .as_str()
+        .map(|s| s.to_string());
+    if delta.is_none() && finish_reason.is_none() {
+        return ignored; // role-only or other inert delta
+    }
+    StreamChunkOut {
+        delta,
+        finish_reason,
+        done: false,
+        error: None,
+        ignored: false,
+    }
+}
+
+/// Consumes the already-open SSE response from llama-server and accumulates
+/// deltas into a terminal `StreamOutcome`.
+///
+/// Protocol assumptions encoded here (verified against llama.cpp SSE shape):
+/// - UTF-8 SSE lines split on `\n`; `\r` tolerated;
+/// - comment lines (leading `:`) and empty lines are ignored;
+/// - `data: {"choices":[{"delta":{"content":…}}]}` carries tokens;
+/// - `data: [DONE]` terminates; EOF before `[DONE]` is a FAILED outcome;
+/// - a `{"error":…}` frame terminates with FAILED;
+/// - `finish_reason: "length"` gets the same truncation marker as non-stream.
+///
+/// Decoupled from Tauri on purpose: `emit` receives every lifecycle payload
+/// the loop decides to publish (`kind: chunk|stalled` — terminal `final`
+/// emission and persistence stay with the owning task in
+/// `stream_message_with_images`). Production passes a closure that emits the
+/// `llm-stream` event; Tribunal tests record payloads into a channel against
+/// `stream_*` mock-server modes. Public as the integration-test seam (same
+/// precedent as `parse_llm_response`); not an IPC command.
+pub async fn consume_llm_sse_stream<E>(
+    response: reqwest::Response,
+    request_id: &str,
+    cancel: &std::sync::atomic::AtomicBool,
+    emit: E,
+) -> StreamOutcome
+where
+    E: Fn(serde_json::Value),
+{
+    use std::sync::atomic::Ordering;
+    use futures::StreamExt;
+
+    // Lifecycle boundary: PENDING → STREAMING (first successful protocol bytes).
+    let mut received = String::new();
+    let mut finish_reason: Option<String> = None;
+
+    let mut event_stream = response.bytes_stream();
+
+    let mut sse_buf = String::new();
+    let mut poll = tokio::time::interval(STREAM_CANCEL_POLL);
+    poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    loop {
+        tokio::select! {
+            _ = poll.tick() => {
+                if cancel.load(Ordering::Relaxed) {
+                    return StreamOutcome::Aborted { received };
+                }
+            }
+            maybe = tokio::time::timeout(STREAM_IDLE_CHUNK_TIMEOUT, event_stream.next()) => {
+                let chunk = match maybe {
+                    Err(_) => {
+                        emit(serde_json::json!({
+                            "kind": "stalled", "requestId": request_id,
+                            "content": received,
+                        }));
+                        return StreamOutcome::Failed {
+                            error: format!(
+                                "Stream idle for more than {}s — worker appears hung; partial response preserved.",
+                                STREAM_IDLE_CHUNK_TIMEOUT.as_secs()
+                            ),
+                            received,
+                        };
+                    }
+                    Ok(None) => {
+                        // EOF before [DONE]: truncated transport. Preserve
+                        // content downstream under the incomplete policy.
+                        return StreamOutcome::Failed {
+                            error: if finish_reason.is_some() {
+                                "Stream ended".to_string()
+                            } else {
+                                "Connection closed mid-stream before completion".to_string()
+                            },
+                            received,
+                        };
+                    }
+                    Ok(Some(Ok(chunk))) => chunk,
+                    Ok(Some(Err(e))) => {
+                        return StreamOutcome::Failed {
+                            error: format!("Stream read error: {}", e),
+                            received,
+                        }
+                    }
+                };
+
+                // Append raw bytes; process complete SSE lines only.
+                sse_buf.push_str(&String::from_utf8_lossy(&chunk));
+                // Hold back any trailing partial line (no newline yet).
+                while let Some(idx) = sse_buf.find('\n') {
+                    let line: String = sse_buf.drain(..=idx).collect();
+                    let line = line.trim_end_matches(['\n', '\r']);
+                    if line.is_empty() || line.starts_with(':') {
+                        continue; // keepalive comment / empty separator
+                    }
+                    let payload = line.strip_prefix("data: ").unwrap_or(line);
+                    let out = parse_stream_chunk(payload);
+                    if let Some(delta) = &out.delta {
+                        received.push_str(delta);
+                        emit(serde_json::json!({
+                            "kind": "chunk", "requestId": request_id, "delta": delta,
+                        }));
+                    }
+                    if let Some(fr) = &out.finish_reason {
+                        finish_reason = Some(fr.clone());
+                    }
+                    if let Some(ref err) = out.error {
+                        return StreamOutcome::Failed { error: err.clone(), received };
+                    }
+                    if out.done {
+                        let mut content = received;
+                        if finish_reason.as_deref() == Some("length") {
+                            log::warn!("Model response truncated due to max_tokens (finish_reason=length, streamed)");
+                            content = format!(
+                                "{}\n\n[— truncated: response hit max_tokens limit —]",
+                                content.trim_end()
+                            );
+                        }
+                        return StreamOutcome::Completed { content };
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Builds and sends the streaming POST (single attempt — streams never
+/// silently re-issue a request, partial UI state would be duplicated), then
+/// hands the response to `consume_llm_sse_stream`. Errors before the response
+/// are `NotStarted`/`Failed` with empty `received` so nothing persists.
+async fn post_chat_completion_stream(
+    state: &SharedLlamaServer,
+    app: &tauri::AppHandle,
+    request_id: &str,
+    cancel: &std::sync::atomic::AtomicBool,
+    messages: Vec<serde_json::Value>,
+    temperature: Option<f64>,
+    max_tokens: Option<u32>,
+    top_p: Option<f64>,
+    model_label: &str,
+) -> StreamOutcome {
+    use tauri::Emitter;
+
+    let (temperature, max_tokens, top_p) =
+        resolve_sampling_params(temperature, max_tokens, top_p);
+    let request_body = serde_json::json!({
+        "model": model_label,
+        "messages": messages,
+        "stream": true,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "top_p": top_p
+    });
+
+    // Single-attempt acquisition (streams never silently re-issue a request:
+    // partial UI state would be duplicated).
+    let _ = state; // lock acquired below via helper; kept symmetrical with non-stream path
+    let (endpoint, session_key) = match acquire_chat_endpoint(state, 0).await {
+        Ok(x) => x,
+        Err(e) => return StreamOutcome::NotStarted { error: e },
+    };
+
+    let mut req = STREAM_HTTP_CLIENT
+        .clone()
+        .post(&endpoint)
+        .header("Content-Type", "application/json")
+        .header("Host", endpoint_host_header(&endpoint));
+    if let Some(ref key) = session_key {
+        req = req.bearer_auth(key);
+    }
+
+    let response = match req.json(&request_body).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            return StreamOutcome::Failed {
+                error: format!("LLM server connection failed (worker may have died): {}", e),
+                received: String::new(),
+            }
+        }
+    };
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let err_text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "<failed to read response body>".to_string());
+        // Preserve the empty-row invariant: HTTP-borne failures never persist.
+        return StreamOutcome::Failed {
+            error: format!("LLM server error ({}): {}", status, err_text),
+            received: String::new(),
+        };
+    }
+
+    // Protocol bytes are successfully flowing: consume to a terminal outcome,
+    // forwarding every lifecycle payload the loop publishes to the
+    // 'llm-stream' Tauri event channel owned by this task.
+    consume_llm_sse_stream(response, request_id, cancel, move |payload| {
+        let _ = app.emit("llm-stream", payload);
+    })
+    .await
+}
+
+/// Pure persistence policy for a streamed terminal outcome:
+/// `(persist?, assistant_msg.incomplete)` for `(lifecycle status, received content)`.
+///
+/// - `completed` + non-empty → persist, complete turn (`incomplete=false`).
+/// - `failed`/`aborted` + non-empty → persist, explicit partial (`incomplete=true`):
+///   received content is user data and is never silently discarded, but is
+///   never represented as a final answer either.
+/// - empty/whitespace content or non-terminal status → persist nothing
+///   (fail-closed; preserves the "no empty assistant rows" invariant).
+/// Appends exactly two rows (user + assistant) in one batch — implemented in
+/// `finalize_stream_persistence` (the only caller).
+fn stream_persistence_decision(status: &str, content: Option<&str>) -> (bool, bool) {
+    let has_content = content.is_some_and(|c| !c.trim().is_empty());
+    if !has_content {
+        return (false, false);
+    }
+    match status {
+        "completed" => (true, false),
+        "failed" | "aborted" => (true, true),
+        _ => (false, false), // non-terminal: never persisted
+    }
+}
+
+/// Terminal persistence for a streamed outcome. Exactly-once: called from the
+/// single owning task; the only place a stream turn ever touches NDJSON.
+fn finalize_stream_persistence(
+    app: &tauri::AppHandle,
+    conversation_id: &str,
+    meta: &AssistantMeta,
+    user_msg: &crate::conversation::ChatMessage,
+    status: &str,
+    content: Option<&str>,
+) -> Result<(Option<String>, bool), String> {
+    let (persist, incomplete) = stream_persistence_decision(status, content);
+    if !persist {
+        return Ok((None, false));
+    }
+    let c = content.expect("non-empty content implied by persistence decision");
+    let assistant_msg = build_assistant_msg(meta, c.to_string(), incomplete);
+    let assistant_id = assistant_msg.id.clone();
+    crate::conversation::append_messages(
+        app,
+        conversation_id,
+        &[user_msg.clone(), assistant_msg],
+    )?;
+    Ok((Some(assistant_id), incomplete))
+}
+
+/// Start a streaming exchange. Preparation (identity, budget, compose + RAG)
+/// runs synchronously so failures surface through the normal command result;
+/// once preparation succeeds the transport task takes over and this command
+/// returns immediately with a `requestId` used for event correlation and
+/// cancellation via `abort_inference_stream`.
+#[command]
+pub async fn stream_message_with_images(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SharedLlamaServer>,
+    conversation_id: String,
+    speaker_id: String,
+    speaker_name: String,
+    text_content: String,
+    image_paths: Vec<String>,
+    character_id: Option<String>,
+    temperature: Option<f64>,
+    max_tokens: Option<u32>,
+    top_p: Option<f64>,
+) -> Result<serde_json::Value, String> {
+    let prepared = match prepare_send_pipeline(
+        &app,
+        state.inner(),
+        &conversation_id,
+        &speaker_id,
+        &speaker_name,
+        text_content,
+        image_paths,
+        character_id,
+    )
+    .await
+    {
+        Ok(p) => p,
+        Err(e) => return Err(e), // command-level failure: nothing streamed, nothing persisted
+    };
+
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let cancel = register_stream(&request_id);
+
+    // Identity snapshot BEFORE the spawn moves message payload.
+    let meta = AssistantMeta::from_prepared(&prepared);
+
+    let app_task = app.clone();
+    let state_task = state.inner().clone();
+    let request_id_task = request_id.clone();
+    let conversation_id_task = conversation_id.clone();
+    let cancel_task = cancel.clone();
+    let user_msg_task = prepared.user_msg.clone();
+
+    tauri::async_runtime::spawn(async move {
+        use tauri::Emitter;
+
+        // Mirrors the non-stream sampling & model label exactly (same
+        // resolve_sampling_params inside the transport helper).
+        let outcome = post_chat_completion_stream(
+            &state_task,
+            &app_task,
+            &request_id_task,
+            &cancel_task,
+            prepared.messages,
+            temperature,
+            max_tokens,
+            top_p,
+            "local-vlm",
+        )
+        .await;
+
+        let (status, content, error) = match outcome {
+            StreamOutcome::Completed { content, .. } => {
+                ("completed".to_string(), Some(content), None)
+            }
+            StreamOutcome::Aborted { received } => ("aborted".to_string(), Some(received), None),
+            StreamOutcome::Failed { error, received } => {
+                ("failed".to_string(), Some(received), Some(error))
+            }
+            StreamOutcome::NotStarted { error } => {
+                // Nothing reached the wire: fail closed, persist nothing.
+                let _ = app_task.emit(
+                    "llm-stream",
+                    serde_json::json!({
+                        "kind": "final",
+                        "requestId": request_id_task.clone(),
+                        "status": "failed",
+                        "content": "",
+                        "incomplete": false,
+                        "persisted": false,
+                        "error": error,
+                    }),
+                );
+                unregister_stream(&request_id_task);
+                return;
+            }
+        };
+
+        // Exactly-once terminal persistence (single owning task).
+        let persist_result = finalize_stream_persistence(
+            &app_task,
+            &conversation_id_task,
+            &meta,
+            &user_msg_task,
+            &status,
+            content.as_deref(),
+        );
+
+        // Arena accounting matches the non-stream path: counted when a
+        // request actually completed against the server (after persistence).
+        let persisted_ok = persist_result.is_ok();
+        if persisted_ok {
+            check_arena_reset(&state_task);
+        }
+
+        let (assistant_id, incomplete, persisted) = match persist_result {
+            Ok((assistant_id, incomplete)) => (assistant_id, incomplete, true),
+            Err(persist_err) => {
+                log::error!(
+                    "Streaming finalization {}/{} persistence failed: {}",
+                    request_id_task, status, persist_err
+                );
+                (None, false, false)
+            }
+        };
+
+        let mut payload = serde_json::json!({
+            "kind": "final",
+            "requestId": request_id_task.clone(),
+            "status": status,
+            "content": content.unwrap_or_default(),
+            "incomplete": incomplete,
+            "persisted": persisted,
+            "assistantId": assistant_id,
+        });
+        if let Some(err) = error {
+            payload["error"] = serde_json::Value::String(err);
+        }
+        let _ = app_task.emit("llm-stream", payload);
+        unregister_stream(&request_id_task);
+    });
+
+    drop(cancel);
+    drop(state); // release the command-level State guard
+
+    Ok(serde_json::json!({ "requestId": request_id }))
+}
+
+/// Request cancellation of an active stream. Returns true when a stream with
+/// that id was live; false is not an error (already finalized).
+#[command]
+pub fn abort_inference_stream(request_id: String) -> Result<bool, String> {
+    Ok(cancel_stream_request(&request_id))
 }
 
 async fn get_character_data(app: &tauri::AppHandle, character_id: &str) -> Result<storage::StoredCharacter, String> {
@@ -1391,7 +2090,7 @@ pub async fn regenerate_last_message(
 
     // 1. Load history. Mid-thread regenerate needs the full file to find the target id,
     // then we truncate + budget before inference.
-    let budget = inference_token_budget(&state).await;
+    let budget = inference_token_budget(state.inner()).await;
     let mid_thread = from_message_id.is_some();
     let all_messages = if mid_thread {
         crate::conversation::load_all_messages(&app, &conversation_id)?
@@ -1465,7 +2164,7 @@ pub async fn regenerate_last_message(
 
     // 4. HTTP completion (shared)
     let assistant_content = post_chat_completion(
-        &state,
+        state.inner(),
         messages,
         temperature,
         max_tokens,
@@ -1490,6 +2189,7 @@ pub async fn regenerate_last_message(
         role: "assistant".to_string(),
         images: vec![],
         token_count: 0,
+        incomplete: false,
     };
 
     if mid_thread {
@@ -1508,7 +2208,7 @@ pub async fn regenerate_last_message(
     }
 
     // Phase 1.5: Track usage and auto-respawn if threshold hit
-    check_arena_reset(&state);
+    check_arena_reset(state.inner());
 
     Ok(assistant_content)
 }
@@ -2208,9 +2908,27 @@ pub fn get_ipc_contract() -> serde_json::Value {
                     "timestamp": {"type": "integer", "description": "Epoch millis"},
                     "role": {"type": "string", "enum": ["user", "assistant", "narrator"]},
                     "images": {"type": "array", "items": {"$ref": "#/definitions/ImageReference"}},
-                    "token_count": {"type": "integer", "default": 0}
+                    "token_count": {"type": "integer", "default": 0},
+                    "incomplete": {"type": "boolean", "default": false, "description": "True only for persisted partial stream turns (Phase B1 ABORTED/FAILED lifecycle). Never set on complete turns."}
                 },
                 "required": ["id", "conversation_id", "speaker_id", "speaker_name", "content", "timestamp", "role"]
+            },
+            "StreamEvent": {
+                "type": "object",
+                "description": "Payload of the 'llm-stream' Tauri event (Phase B1). Correlated to its originating request via requestId.",
+                "properties": {
+                    "kind": {"type": "string", "enum": ["chunk", "stalled", "final"],
+                        "description": "chunk: delta token(s). stalled: no bytes for STREAM_IDLE_CHUNK_TIMEOUT (followed by a final failed event). final: terminal exactly-once event."},
+                    "requestId": {"type": "string"},
+                    "delta": {"type": ["string", "null"], "description": "chunk only: incremental content fragment"},
+                    "status": {"type": ["string", "null"], "enum": ["completed", "aborted", "failed", null], "description": "final only: terminal lifecycle state"},
+                    "content": {"type": ["string", "null"], "description": "final only: full content so far (may be partial)"},
+                    "incomplete": {"type": ["boolean", "null"], "description": "final only: mirrors the persisted ChatMessage.incomplete flag"},
+                    "persisted": {"type": ["boolean", "null"], "description": "final only: whether NDJSON appends happened"},
+                    "assistantId": {"type": ["string", "null"], "description": "final only: persisted assistant message id, when persisted"},
+                    "error": {"type": ["string", "null"], "description": "final only: failure detail"}
+                },
+                "required": ["kind", "requestId"]
             },
             "ConversationMetadata": {
                 "type": "object",
@@ -2392,6 +3110,7 @@ mod sampling_and_history_tests {
             role: "assistant".into(),
             images: vec![],
             token_count: 0,
+        incomplete: false,
         };
         let v = format_history_message_for_llm(&msg);
         assert_eq!(v["role"], "assistant");
@@ -2426,6 +3145,7 @@ mod sampling_and_history_tests {
                 role: "user".into(),
                 images: vec![],
                 token_count: 0,
+        incomplete: false,
             },
             crate::conversation::ChatMessage {
                 id: "2".into(),
@@ -2437,6 +3157,7 @@ mod sampling_and_history_tests {
                 role: "assistant".into(),
                 images: vec![],
                 token_count: 0,
+        incomplete: false,
             },
         ];
         let q = build_rag_query("What about the reactor?", &history);
@@ -2492,6 +3213,176 @@ mod identity_contract_tests {
         let err = resolve_character_id_for_inference(None, &[], "user")
             .expect_err("must fail fast");
         assert!(err.contains("Cannot resolve character"), "unexpected: {err}");
+    }
+}
+
+#[cfg(test)]
+mod streaming_tests {
+    use super::*;
+
+    // ==================== parse_stream_chunk (SSE protocol layer) ====================
+
+    #[test]
+    fn chunk_delta_token_extracts_content() {
+        let out = parse_stream_chunk(
+            r#"{"choices":[{"index":0,"delta":{"content":"Hello"}}]}"#,
+        );
+        assert_eq!(out.delta.as_deref(), Some("Hello"));
+        assert!(!out.done);
+        assert!(out.error.is_none());
+        assert!(!out.ignored);
+        assert!(out.finish_reason.is_none());
+    }
+
+    #[test]
+    fn chunk_role_only_delta_is_ignored() {
+        // llama.cpp's first frame often carries role attribution only.
+        let out = parse_stream_chunk(
+            r#"{"choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}"#,
+        );
+        assert!(out.delta.is_none() || out.delta.as_deref() == Some(""));
+        // content:"" is a delta of empty string — still treated as no-op carry.
+        assert!(out.ignored || out.delta == Some(String::new()));
+    }
+
+    #[test]
+    fn chunk_finish_reason_without_content_is_not_ignored() {
+        let out = parse_stream_chunk(
+            r#"{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
+        );
+        assert_eq!(out.finish_reason.as_deref(), Some("stop"));
+        assert!(out.delta.is_none());
+        assert!(!out.ignored);
+    }
+
+    #[test]
+    fn chunk_done_sentinel() {
+        let out = parse_stream_chunk("[DONE]");
+        assert!(out.done);
+        assert!(out.delta.is_none());
+        assert!(!out.ignored);
+    }
+
+    #[test]
+    fn chunk_error_string_and_object_forms() {
+        let e1 = parse_stream_chunk(r#"{"error":"worker died"}"#);
+        assert_eq!(e1.error.as_deref(), Some("worker died"));
+        let e2 = parse_stream_chunk(
+            r#"{"error":{"message":"model not loaded","code":500}}"#,
+        );
+        assert_eq!(e2.error.as_deref(), Some("model not loaded"));
+    }
+
+    #[test]
+    fn chunk_malformed_json_is_error_not_panic() {
+        let out = parse_stream_chunk("{not-json{{{ broke");
+        assert!(out.error.unwrap().starts_with("malformed stream payload"));
+        assert!(!out.done);
+    }
+
+    #[test]
+    fn chunk_empty_and_whitespace_ignored() {
+        for p in ["", "   ", "\n"] {
+            let out = parse_stream_chunk(p);
+            assert!(out.ignored, "empty payload {p:?} must be ignored");
+        }
+    }
+
+    #[test]
+    fn chunk_stats_only_frame_ignored() {
+        let out = parse_stream_chunk(
+            r#"{"timings":{"per_token_ms":1.0},"choices":[]}"#,
+        );
+        assert!(out.ignored);
+    }
+
+    // ==================== stream_persistence_decision (policy layer) ====================
+
+    #[test]
+    fn persistence_completed_persists_complete_turn() {
+        assert_eq!(stream_persistence_decision("completed", Some("answer")), (true, false));
+    }
+
+    #[test]
+    fn persistence_failed_with_content_marks_incomplete() {
+        assert_eq!(stream_persistence_decision("failed", Some("partial")), (true, true));
+        assert_eq!(stream_persistence_decision("aborted", Some("user text")), (true, true));
+    }
+
+    #[test]
+    fn persistence_empty_content_persists_nothing_fail_closed() {
+        assert_eq!(stream_persistence_decision("completed", Some("")), (false, false));
+        assert_eq!(stream_persistence_decision("failed", Some("   \n")), (false, false));
+        assert_eq!(stream_persistence_decision("aborted", None), (false, false));
+    }
+
+    #[test]
+    fn persistence_non_terminal_status_never_persists() {
+        assert_eq!(stream_persistence_decision("pending", Some("x")), (false, false));
+        assert_eq!(stream_persistence_decision("streaming", Some("x")), (false, false));
+    }
+
+    // ==================== cancel registry (lifecycle layer) ====================
+
+    #[test]
+    fn cancel_registry_set_unset_once() {
+        let id = "req-cancel-unit-test-1";
+        let cancel = register_stream(id);
+        assert!(!cancel.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(cancel_stream_request(id)); // live → true
+        assert!(cancel.load(std::sync::atomic::Ordering::Relaxed)); // flag observed
+        unregister_stream(id);
+        assert!(!cancel_stream_request(id)); // gone → false, no panic
+        // Double-unregister is safe (stream finalize = single owner but
+        // belt-and-braces for any future path erroring pre-finalize).
+        unregister_stream(id);
+    }
+
+    #[test]
+    fn cancel_unknown_request_id_is_false() {
+        assert!(!cancel_stream_request("never-registered-anywhere"));
+    }
+
+    // ==================== AssistantMeta → build_assistant_msg ====================
+
+    #[test]
+    fn assistant_meta_snapshot_preserves_identity_and_incomplete_flag() {
+        let prepared = PreparedSend {
+            messages: vec![],
+            resolved_character_id: "char-uuid-1".into(),
+            assistant_display_name: "Guide".into(),
+            user_msg: crate::conversation::ChatMessage {
+                id: "u-1".into(),
+                conversation_id: "conv-1".into(),
+                speaker_id: "user".into(),
+                speaker_name: "User".into(),
+                content: "hello".into(),
+                timestamp: 42,
+                role: "user".into(),
+                images: vec![],
+                token_count: 3,
+                incomplete: false,
+            },
+            now: 42,
+        };
+        let meta = AssistantMeta::from_prepared(&prepared);
+        assert_eq!(meta.conversation_id, "conv-1");
+        assert_eq!(meta.character_id, "char-uuid-1");
+        assert_eq!(meta.display_name, "Guide");
+        assert_eq!(meta.now, 42);
+
+        let partial = build_assistant_msg(&meta, "partial..".into(), true);
+        assert_eq!(partial.speaker_id, "char-uuid-1");
+        assert_eq!(partial.speaker_name, "Guide");
+        assert_eq!(partial.conversation_id, "conv-1");
+        assert_eq!(partial.timestamp, 42);
+        assert_eq!(partial.role, "assistant");
+        assert!(partial.incomplete, "partial stream turns MUST be marked");
+
+        let done = build_assistant_msg(&meta, "full answer".into(), false);
+        assert!(!done.incomplete, "completed turns never set the flag");
+        // Fresh ids per row, shared wall-clock one turn.
+        assert_ne!(partial.id, done.id);
     }
 }
 

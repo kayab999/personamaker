@@ -219,6 +219,8 @@ async fn main() {
             // Inference
             commands::start_inference_server,
             commands::stop_inference_server,
+            commands::stream_message_with_images,
+            commands::abort_inference_stream,
             commands::get_inference_status,
             // Phase 1.5: Arena Reset
             commands::reset_inference_server,

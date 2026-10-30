@@ -51,6 +51,11 @@
           },
           "type": "array"
         },
+        "incomplete": {
+          "default": false,
+          "description": "True only for persisted partial stream turns (Phase B1 ABORTED/FAILED lifecycle). Never set on complete turns.",
+          "type": "boolean"
+        },
         "role": {
           "enum": [
             "user",
@@ -347,6 +352,83 @@
         "personality",
         "greeting",
         "createdAt"
+      ],
+      "type": "object"
+    },
+    "StreamEvent": {
+      "description": "Payload of the 'llm-stream' Tauri event (Phase B1). Correlated to its originating request via requestId.",
+      "properties": {
+        "assistantId": {
+          "description": "final only: persisted assistant message id, when persisted",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "content": {
+          "description": "final only: full content so far (may be partial)",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "delta": {
+          "description": "chunk only: incremental content fragment",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "error": {
+          "description": "final only: failure detail",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "incomplete": {
+          "description": "final only: mirrors the persisted ChatMessage.incomplete flag",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "kind": {
+          "description": "chunk: delta token(s). stalled: no bytes for STREAM_IDLE_CHUNK_TIMEOUT (followed by a final failed event). final: terminal exactly-once event.",
+          "enum": [
+            "chunk",
+            "stalled",
+            "final"
+          ],
+          "type": "string"
+        },
+        "persisted": {
+          "description": "final only: whether NDJSON appends happened",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "requestId": {
+          "type": "string"
+        },
+        "status": {
+          "description": "final only: terminal lifecycle state",
+          "enum": [
+            "completed",
+            "aborted",
+            "failed",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "requestId"
       ],
       "type": "object"
     }
