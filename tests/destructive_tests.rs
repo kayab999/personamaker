@@ -1151,3 +1151,42 @@ fn test_csp_no_http_origins_in_script_src() -> anyhow::Result<()> {
     assert!(!html.contains("https://cdn.tailwindcss.com"), "index.html must not load CDN tailwind");
     Ok(())
 }
+
+// ==================== C04: Supply-chain config location ====================
+
+/// cargo-audit only auto-loads `.cargo/audit.toml`; a root-level `audit.toml`
+/// is silently ignored. That is exactly how the accepted-risk list drifted
+/// before: the documented ignores had no effect and CI only worked because the
+/// same IDs were repeated as `--ignore` flags. This test keeps a single source
+/// of truth so the next agent cannot re-introduce the split.
+#[test]
+fn test_audit_config_is_in_the_path_cargo_audit_reads() -> anyhow::Result<()> {
+    use std::path::Path;
+
+    assert!(
+        Path::new(".cargo/audit.toml").is_file(),
+        "cargo-audit auto-loads .cargo/audit.toml — the accepted-risk list must live there"
+    );
+    assert!(
+        !Path::new("audit.toml").exists(),
+        "stray root audit.toml: cargo-audit never reads it, so its ignores would be dead text"
+    );
+
+    let cfg = std::fs::read_to_string(".cargo/audit.toml")?;
+    assert!(
+        cfg.contains("[advisories]"),
+        ".cargo/audit.toml must contain an [advisories] section"
+    );
+
+    // CI must not re-duplicate the ignore list as flags.
+    let ci = std::fs::read_to_string(".github/workflows/tribunal.yml")?;
+    assert!(
+        !ci.contains("--ignore RUSTSEC-"),
+        "CI duplicates accepted risks as --ignore flags; keep them in .cargo/audit.toml only"
+    );
+    assert!(
+        ci.contains("cargo audit"),
+        "CI must still run cargo audit"
+    );
+    Ok(())
+}

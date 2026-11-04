@@ -45,6 +45,24 @@ All notable changes to LocalPersona are documented in this file.
 - `circuit_breaker.rs` no longer claims SHA-256 hashing (it uses
   `DefaultHasher`; documented as an in-process dedup token only).
 
+### Fixed — supply chain (post-push CI)
+
+- **The `Supply-Chain Audit` job failed on `main`** because seven advisories
+  were published against the TLS stack after the last green run (2026-10-04):
+  `rustls` 0.23.45 (RUSTSEC-2026-0346/0347/0348/0349), `rustls-webpki`
+  0.103.15 (RUSTSEC-2026-0382), `webpki-roots` / `webpki-root-certs` 1.0.7
+  (RUSTSEC-2026-0381/0383). All were fixed by a lockfile refresh:
+  `rustls` → 0.23.46, `rustls-webpki` → 0.103.16, `webpki-roots` /
+  `webpki-root-certs` → 1.0.11, plus `tokio` 1.52.3 → 1.54.1,
+  `anyhow` 1.0.102 → 1.0.104 and the yanked `der` 0.8.0 → 0.8.3.
+- **The audit config was never being read.** `cargo audit` auto-loads
+  `.cargo/audit.toml`, not a root-level `audit.toml`, so the documented
+  accepted risks had no effect and CI only passed because the same IDs were
+  repeated as `--ignore` flags — two lists that could silently drift. The file
+  moved to `.cargo/audit.toml`, CI now runs a bare `cargo audit`, and
+  `tests/destructive_tests.rs::test_audit_config_is_in_the_path_cargo_audit_reads`
+  fails if a root `audit.toml` reappears or if CI re-duplicates the ignores.
+
 ### Added
 - `tests/ipc_contract.rs` (5 tests): frontend↔backend command parity, Tauri
   global-API flag, bundled-frontend presence, and a guard against

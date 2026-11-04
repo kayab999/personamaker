@@ -1,0 +1,43 @@
+# cargo-audit configuration (P1.5 supply-chain gate).
+#
+# Location matters: cargo-audit only auto-loads `.cargo/audit.toml` (it does
+# NOT read `audit.toml` from the repo root). This file used to live at the
+# root, so the CI step had to duplicate every ignore as a `--ignore` flag and
+# the two lists could drift. It now lives here, CI runs a bare `cargo audit`,
+# and there is exactly one place to add an accepted risk.
+#
+# Policy: `cargo audit` fails CI on any non-ignored *vulnerability*. The
+# `unmaintained` / `unsound-in-unused-API` / `yanked` entries below are
+# reported as warnings and do not fail the build; they are listed for the
+# record, not ignored.
+#
+# Entries below are accepted risks with no compatible upstream fix as of
+# 2026-11-04 (verified via `cargo update -p <crate>` — 0 packages updatable).
+# Re-audit on every Cargo.lock change; drop entries once fixed upstream.
+[advisories]
+ignore = [
+    # RUSTSEC-2026-0187: lopdf stack overflow via deeply nested PDF objects.
+    # Relevant to F-02 (PDF ingest). Mitigated in-app by catch_unwind +
+    # panic="unwind" (hostile PDFs rejected, no full-app kill for Rust-level
+    # panics). Residual: true stack exhaustion is not unwindable — tracked
+    # follow-up is process-isolated PDF parsing. pdf-extract pins lopdf 0.34.
+    "RUSTSEC-2026-0187",
+    # RUSTSEC-2026-0195: quick-xml unbounded namespace allocation (DoS).
+    # Transitive (via plist/tauri-bundler chain); only parses trusted local
+    # plists/bundles, never remote input. No compatible update available.
+    "RUSTSEC-2026-0195",
+    # RUSTSEC-2026-0194: quick-xml quadratic duplicate-attribute check (DoS).
+    # Same exposure/rationale as RUSTSEC-2026-0195.
+    "RUSTSEC-2026-0194",
+]
+
+# ---------------------------------------------------------------------------
+# Standing warnings (not ignored — they do not fail the build):
+#
+#   unmaintained  unic-char-property / unic-char-range / unic-common /
+#                 unic-ucd-ident / unic-ucd-version  ← urlpattern ← tauri-utils
+#                 (Tauri internal; no replacement upstream)
+#   unmaintained  paste, proc-macro-error  ← proc-macro/build-time only
+#   unsound       glib 0.18.5 (VariantStrIter) ← gtk-rs pinned by tauri 2.x;
+#                 `cargo update -p glib` reports 0 packages updatable
+# ---------------------------------------------------------------------------

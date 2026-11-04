@@ -253,14 +253,17 @@ jobs:
         run: cargo install cargo-audit --locked
 
       - name: cargo audit (advisories block, warnings shown)
-        # Accepted-risk ignores are documented in audit.toml (no compatible
-        # upstream fix as of 2026-10-04). Flags passed explicitly because
-        # cargo-audit does not reliably auto-load audit.toml in CI.
-        run: >
-          cargo audit
-          --ignore RUSTSEC-2026-0187
-          --ignore RUSTSEC-2026-0195
-          --ignore RUSTSEC-2026-0194
+        # Accepted-risk ignores live in `.cargo/audit.toml`, which cargo-audit
+        # auto-loads. Do not duplicate them as flags here: that is how the
+        # list drifted before (the config file used to sit at the repo root,
+        # where cargo-audit never reads it, so only the flags had any effect).
+        run: cargo audit
+
+      - name: Audit config is where cargo-audit looks for it
+        run: |
+          test -f .cargo/audit.toml || { echo "❌ .cargo/audit.toml missing"; exit 1; }
+          test ! -f audit.toml || { echo "❌ stray root audit.toml (cargo-audit ignores it)"; exit 1; }
+          echo "✅ .cargo/audit.toml present and unique"
 
   # ==================== License/Ban Gate (sweep W3) ====================
   deny:

@@ -32,7 +32,7 @@ Packaging
 • Linux .deb ~14MB in dist/0.9.0-rc.1/; package via scripts/package-release.sh.
 • Brand icons in icons/; master in docs/branding/.
 
-Governance: ./scripts/tribunal.sh (check + destructive + property + IPC contract) + CI Tribunal v12.1 (14 jobs incl. audit/deny/sbom/coverage/frontend/ipc-contract) required on main.
+Governance: ./scripts/tribunal.sh (check + destructive + property + IPC contract) + CI Tribunal v12.1 (14 jobs incl. audit/deny/sbom/coverage/frontend/ipc-contract) required on main. Supply chain: `.cargo/audit.toml` (auto-loaded) + `deny.toml`.
 
 Status: closed-beta RC. No numeric maturity scores by policy — readiness is
 measured, not asserted (see table below). Human soak/matrix still open.
@@ -42,12 +42,12 @@ Not implemented: character-card interop, lorebook/World Info, group chat.
 
 | Criterion (2026-11-04) | State |
 |---|---|
-| Tribunal CI verdict | GREEN locally (14 jobs incl. coverage floor 30%, audit, deny, ipc-contract); CI re-verify on next push |
-| Test matrix | 147 Rust test fns (incl. 22 streaming, 16 revisions, 12 fuzz rot guards, 5 IPC contract, 2 PDF pipe) + 6 frontend smoke tests; 0 failing locally |
+| Tribunal CI verdict | GREEN locally + on CI (14 jobs incl. coverage floor 30%, audit, deny, ipc-contract) |
+| Test matrix | 180 Rust test fns (incl. 22 streaming, 16 revisions, 12 fuzz rot guards, 5 IPC contract, 2 PDF pipe, 32 destructive) + 6 frontend smoke tests; 0 failing locally |
 | Release-blocker gate | `tests/ipc_contract.rs` asserts frontend↔backend command parity AND `app.withGlobalTauri=true` |
 | Production unwrap()/expect() | 0 (ratchet counts both forms) |
 | Open audit findings | High: 0 · Med: no desktop E2E job · Low: tracked in sweep docs |
-| Known unmitigated vulns | 3 accepted-risk ignores in audit.toml (no upstream fix) |
+| Known unmitigated vulns | 0 vulnerabilities; 3 accepted-risk ignores in `.cargo/audit.toml` + 8 standing warnings (glib/unic-*/paste) |
 | Human soak / acceptance matrix | OPEN |
 | Fuzz corpus | Seeded (gguf/ndjson/pdf) + rot-guard suite; runbook fuzz/README.md |
 

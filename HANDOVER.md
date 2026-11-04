@@ -148,6 +148,26 @@ Verified: `./scripts/tribunal.sh` green; full `cargo test --all-targets` green
 initializes data dirs, stays alive; the rebuilt binary now embeds the Tauri
 global-API script (`window.__TAURI__` present in strings).
 
+## Supply chain — dependency refresh — DONE (2026-11-04)
+
+The first push turned CI red on `Supply-Chain Audit` alone (13/14 jobs green):
+seven advisories landed against the TLS stack after the last green run
+(2026-10-04) — `rustls` 0.23.45 (RUSTSEC-2026-0346/0347/0348/0349),
+`rustls-webpki` 0.103.15 (-0382), `webpki-roots` / `webpki-root-certs` 1.0.7
+(-0381/0383). Lockfile refresh fixed all seven (rustls 0.23.46,
+rustls-webpki 0.103.16, webpki-* 1.0.11, tokio 1.54.1, anyhow 1.0.104,
+yanked der 0.8.3). `cargo audit` now reports **0 vulnerabilities** and 8
+standing warnings (glib pinned by gtk-rs/tauri; unic-* via `urlpattern` ←
+`tauri-utils`; paste/proc-macro-error are build-time).
+
+Also fixed a silent governance hole: `cargo audit` only auto-loads
+`.cargo/audit.toml`, never a root `audit.toml`. The accepted-risk list was at
+the root, so it had **no effect** — CI only passed because the same IDs were
+repeated as `--ignore` flags. Config moved to `.cargo/audit.toml`, CI runs a
+bare `cargo audit`, and
+`tests/destructive_tests.rs::test_audit_config_is_in_the_path_cargo_audit_reads`
+fails if the root file returns or CI re-duplicates the ignores.
+
 ## Rules for the next agent
 
 - Local commits only; **never push** without explicit authorization.

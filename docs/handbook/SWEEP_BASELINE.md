@@ -12,7 +12,7 @@ never lower a floor without a commit explaining why.
 | `cargo audit` (with 3 ignores) | exit 0 | CI `audit` job |
 | `cargo deny check licenses bans sources` | not run (no deny.toml) | CI `deny` job (new) |
 | `cargo clippy` (CI flags) | clean | CI `clippy` job |
-| Accepted audit ignores | RUSTSEC-2026-0187, -0195, -0194 | audit.toml + CI flags |
+| Accepted audit ignores | RUSTSEC-2026-0187, -0195, -0194 | `.cargo/audit.toml` (auto-loaded; CI has no flags) |
 | `.git` size / tracked files | 2.8 MB / 130 | — |
 | Default personas with real-person refs | 7 of 7 | 0 after W4 |
 | CSP `script-src` | `'self'` only | CI frontend check |

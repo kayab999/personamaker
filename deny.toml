@@ -1,10 +1,10 @@
 # cargo-deny configuration (sweep W3). Advisories are owned by the
-# `cargo audit` gate (see audit.toml); deny enforces licenses, bans, sources.
+# `cargo audit` gate (see .cargo/audit.toml); deny enforces licenses, bans, sources.
 [graph]
 targets = ["x86_64-unknown-linux-gnu"]
 
 # NOTE: no [advisories] section — advisories are owned by the `cargo audit`
-# gate (see audit.toml) to avoid double-fail drift between the two tools.
+# gate (see .cargo/audit.toml) to avoid double-fail drift between the two tools.
 
 [licenses]
 allow = [
