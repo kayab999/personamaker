@@ -45,6 +45,12 @@ pub struct ChatMessage {
     /// treat these turns as explicitly non-final.
     #[serde(default)]
     pub incomplete: bool,
+    /// True only on revision-folded views (Phase B2): the displayed content is
+    /// the active revision of a user edit, not the original row. Raw
+    /// messages.ndjson lines never carry it; `append_revisions`-aware loaders
+    /// set it during the fold. `#[serde(default)]` for back-compat.
+    #[serde(default)]
+    pub edited: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -252,9 +258,11 @@ pub fn append_messages(
     let meta_path = metadata_path(&dir);
     let meta_lock = crate::storage::acquire_sidecar_lock(&meta_path)?;
 
-    let last = prepared
-        .last()
-        .expect("messages non-empty checked above");
+    let Some(last) = prepared.last() else {
+        // Defensive: an empty batch must be a clean error, never a panic on a
+        // hot append path. (Audit P1-7.)
+        return Err("cannot append an empty message batch".to_string());
+    };
     let batch_n = prepared.len() as u32;
 
     let meta = if meta_path.exists() {
@@ -338,6 +346,16 @@ pub fn append_messages(
     }
 
     Ok(())
+}
+
+fn load_metadata_from_dir(dir: &Path) -> Result<Option<ConversationMetadata>, String> {
+    let meta_path = metadata_path(dir);
+    if !meta_path.exists() {
+        return Ok(None);
+    }
+    let json = fs::read_to_string(meta_path).map_err(|e| e.to_string())?;
+    let meta: ConversationMetadata = serde_json::from_str(&json).map_err(|e| e.to_string())?;
+    Ok(Some(meta))
 }
 
 pub fn load_metadata(app: &AppHandle, conv_id: &str) -> Result<Option<ConversationMetadata>, String> {
@@ -455,19 +473,39 @@ pub fn load_messages_paginated(
         }
     }
 
+    // Phase B2: the paginated fallback view is still user-facing — fold.
+    match load_revisions(app, conv_id) {
+        Ok(records) => apply_revisions(&mut messages, &records),
+        Err(e) => log::error!(
+            "Could not load revisions for {} (paginated view uses raw history): {}",
+            conv_id,
+            e
+        ),
+    }
     Ok(messages)
 }
 
 /// Loads messages from the end (most recent first) until the cumulative
 /// estimated token count reaches or exceeds the given budget.
 /// Returns messages in chronological order (oldest first within the window).
+///
+/// Phase B2: revisions are folded BEFORE the budget walk so edited content is
+/// what actually fits the window (stale token estimates of raw rows would
+/// otherwise mis-size the view).
 pub fn load_messages_within_token_budget(
     app: &AppHandle,
     conv_id: &str,
     max_tokens: usize,
 ) -> Result<Vec<ChatMessage>, String> {
     let dir = get_conversation_dir(app, conv_id)?;
-    let msg_path = messages_path(&dir);
+    load_messages_within_token_budget_in_dir(&dir, max_tokens)
+}
+
+pub fn load_messages_within_token_budget_in_dir(
+    conv_dir: &Path,
+    max_tokens: usize,
+) -> Result<Vec<ChatMessage>, String> {
+    let msg_path = messages_path(conv_dir);
     if !msg_path.exists() {
         return Ok(vec![]);
     }
@@ -478,46 +516,34 @@ pub fn load_messages_within_token_budget(
     // NOTE: explicit loop (not filter_map) — io::Lines can yield infinite
     // Errs on read failure, and skipping (not stopping at) bad lines is the
     // intended "load what survives corruption" behavior.
-    let mut all_lines: Vec<String> = Vec::new();
+    let mut messages: Vec<ChatMessage> = Vec::new();
     for line in reader.lines() {
         match line {
             Ok(l) => {
-                if !l.trim().is_empty() {
-                    all_lines.push(l);
+                if l.trim().is_empty() {
+                    continue;
+                }
+                match serde_json::from_str::<ChatMessage>(&l) {
+                    Ok(msg) => messages.push(msg),
+                    Err(e) => {
+                        log::warn!("Skipping corrupted line while loading {}: {}", msg_path.display(), e);
+                    }
                 }
             }
             Err(e) => log::warn!("Skipping unreadable conversation line: {}", e),
         }
     }
 
-    // Work backwards from the end
-    let mut selected: Vec<ChatMessage> = Vec::new();
-    let mut total_tokens: usize = 0;
-
-    for line in all_lines.iter().rev() {
-        match serde_json::from_str::<ChatMessage>(line) {
-            Ok(msg) => {
-                let tokens = if msg.token_count > 0 {
-                    msg.token_count
-                } else {
-                    estimate_tokens(&msg.content)
-                };
-
-                if total_tokens + tokens > max_tokens && !selected.is_empty() {
-                    break;
-                }
-
-                selected.push(msg);
-                total_tokens += tokens;
-            }
-            Err(e) => {
-                log::warn!("Skipping corrupted line while loading context budget for {}: {}", conv_id, e);
-            }
-        }
+    match load_revisions_from_dir(conv_dir) {
+        Ok(records) => apply_revisions(&mut messages, &records),
+        Err(e) => log::error!(
+            "Could not load revisions (budget walk uses raw history): {}",
+            e
+        ),
     }
 
-    selected.reverse(); // chronological order
-    Ok(selected)
+    let taken = take_messages_within_token_budget(&messages, max_tokens);
+    Ok(taken)
 }
 
 /// Keep the newest messages from `messages` until `max_tokens` is reached.
@@ -549,10 +575,6 @@ pub fn take_messages_within_token_budget(
 
 pub fn load_all_messages(app: &AppHandle, conv_id: &str) -> Result<Vec<ChatMessage>, String> {
     let dir = get_conversation_dir(app, conv_id)?;
-    let msg_path = messages_path(&dir);
-    if !msg_path.exists() {
-        return Ok(vec![]);
-    }
 
     // Phase 0: Migration detection - check conversation metadata version
     if let Ok(Some(meta)) = load_metadata(app, conv_id) {
@@ -562,6 +584,26 @@ pub fn load_all_messages(app: &AppHandle, conv_id: &str) -> Result<Vec<ChatMessa
                 conv_id, meta.version
             );
         }
+    }
+
+    let mut messages = load_all_messages_core_from_dir(&dir)?;
+    match load_revisions_from_dir(&dir) {
+        Ok(records) => apply_revisions(&mut messages, &records),
+        Err(e) => log::error!(
+            "Could not load revisions for {} (displaying raw history): {}",
+            conv_id,
+            e
+        ),
+    }
+    Ok(messages)
+}
+
+/// Parser over the raw messages.ndjson — no revision fold. Every user-facing
+/// view must go through `load_all_messages` (folded) instead.
+pub fn load_all_messages_core_from_dir(dir: &Path) -> Result<Vec<ChatMessage>, String> {
+    let msg_path = messages_path(dir);
+    if !msg_path.exists() {
+        return Ok(vec![]);
     }
 
     let file = fs::File::open(&msg_path).map_err(|e| e.to_string())?;
@@ -586,8 +628,8 @@ pub fn load_all_messages(app: &AppHandle, conv_id: &str) -> Result<Vec<ChatMessa
             Err(e) => {
                 // Phase 0: Resilience - skip corrupted/truncated lines instead of failing the whole load
                 log::warn!(
-                    "Skipping corrupted line {} in conversation {}: {}",
-                    line_number, conv_id, e
+                    "Skipping corrupted line {} in {}: {}",
+                    line_number, msg_path.display(), e
                 );
             }
         }
@@ -620,12 +662,16 @@ fn participant_ids_from_messages(messages: &[ChatMessage]) -> Vec<String> {
     ids
 }
 
-fn preview_from_message(msg: &ChatMessage) -> String {
-    if msg.content.chars().count() > 60 {
-        format!("{}...", safe_truncate(&msg.content, 57))
+fn preview_from_text(text: &str) -> String {
+    if text.chars().count() > 60 {
+        format!("{}...", safe_truncate(text, 57))
     } else {
-        msg.content.clone()
+        text.to_string()
     }
+}
+
+fn preview_from_message(msg: &ChatMessage) -> String {
+    preview_from_text(&msg.content)
 }
 
 /// Phase 0: Repair a potentially corrupted conversation.
@@ -897,6 +943,298 @@ pub fn truncate_after_last_user(messages: &[ChatMessage]) -> Vec<ChatMessage> {
     messages[..=last_user_idx].to_vec()
 }
 
+// ==================== Phase B2: non-destructive message revisions ====================
+//
+// Editing a message NEVER rewrites messages.ndjson. Instead each edit appends
+// one `EditRecord` line to `revisions/{revisions.ndjson}` next to the
+// conversation: `{schema_version, revision_id, message_id, old_content,
+// new_content, edited_at, previous_revision_id}`.
+//
+// - Original rows and their revision lineage stay on disk verbatim (user
+//   sovereignty: edits are auditable, revertable, recoverable after crashes).
+// - The ACTIVE version of a message is the last valid `EditRecord` for its id
+//   in append order; loaders fold revisions in one pass (`apply_revisions`).
+// - Mid-thread regenerate still uses the pre-existing destructive rewrite
+//   (with its own .bak). After such a rewrite the edited content is baked
+//   into messages.ndjson; the fold REMAINS idempotent because a revision
+//   replaces content wholesale — applying it to the already-baked line is a
+//   no-op. Stale revision lines for truncated turn ids simply never match.
+// - Corrupt/truncated revision lines are skipped at load, exactly like
+//   message lines (Phase 0 resilience contract).
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EditRecord {
+    /// Explicit schema version for migration support.
+    #[serde(default = "default_metadata_version")]
+    pub schema_version: u32,
+    pub revision_id: String,
+    /// Target message id inside messages.ndjson.
+    pub message_id: String,
+    /// Content the revision replaced (captured at edit time; provenance).
+    pub old_content: String,
+    /// Full replacement text (the new active content).
+    pub new_content: String,
+    /// Epoch millis.
+    pub edited_at: u64,
+    /// Previous revision id in the supersession chain, when any.
+    pub previous_revision_id: Option<String>,
+}
+
+fn revisions_path(conv_dir: &Path) -> PathBuf {
+    conv_dir.join("revisions.ndjson")
+}
+
+fn parse_edit_record_line(line: &str) -> Result<EditRecord, String> {
+    serde_json::from_str::<EditRecord>(line).map_err(|e| e.to_string())
+}
+
+/// Appends a revision record for `message_id`, capturing provenance.
+/// Validates: message exists, content actually changed, non-empty replacement.
+/// Idempotence note: an identical-content save is rejected (no-op spam).
+pub fn append_edit_record(
+    app: &AppHandle,
+    conv_id: &str,
+    message_id: &str,
+    new_content: &str,
+) -> Result<EditRecord, String> {
+    validate_conv_id(conv_id)?;
+    let dir = get_conversation_dir(app, conv_id)?;
+    append_edit_record_in_dir(&dir, conv_id, message_id, new_content)
+}
+
+/// Directory-scoped core (testable without a Tauri AppHandle — `conv_dir` is
+/// the conversation directory). Provenance contract: `old_content` is the
+/// ACTIVE content being replaced — i.e. the revision-folded view the user
+/// actually saw and edited. Supersession chains are therefore complete and
+/// honest: record[i].old_content == record[i-1].new_content (or the raw row's
+/// content for the first edit — identical value whenever a prior rewrite
+/// baked the edit back into messages.ndjson).
+pub fn append_edit_record_in_dir(
+    conv_dir: &Path,
+    conv_id: &str,
+    message_id: &str,
+    new_content: &str,
+) -> Result<EditRecord, String> {
+    let new_content = new_content.trim_end_matches(['\n', '\r']);
+    if new_content.trim().is_empty() {
+        return Err("Edited message must not be empty (use delete instead)".to_string());
+    }
+
+    // Active view (fold) for chain-faithful provenance; a revision-load
+    // failure inside the fold degrades to the raw view (never lose history).
+    let mut active = load_all_messages_core_from_dir(conv_dir)?;
+    match load_revisions_from_dir(conv_dir) {
+        Ok(records) => apply_revisions(&mut active, &records),
+        Err(e) => log::error!(
+            "Could not load revisions for {} (edit provenance uses raw view): {}",
+            conv_id,
+            e
+        ),
+    }
+    let target = active
+        .iter()
+        .find(|m| m.id == message_id)
+        .ok_or_else(|| format!("Message {} not found in conversation {}", message_id, conv_id))?;
+    if target.content == new_content {
+        return Err("No change: new content equals the current content".to_string());
+    }
+
+    // Chain: latest revision for this message today (append order).
+    let existing = load_revisions_from_dir(conv_dir)?;
+    let previous = existing
+        .iter()
+        .rev()
+        .find(|r| r.message_id == message_id)
+        .map(|r| r.revision_id.clone());
+
+    let record = EditRecord {
+        schema_version: default_metadata_version(),
+        revision_id: uuid::Uuid::new_v4().to_string(),
+        message_id: message_id.to_string(),
+        old_content: target.content.clone(),
+        new_content: new_content.to_string(),
+        edited_at: current_timestamp(),
+        previous_revision_id: previous,
+    };
+
+    let dir = conv_dir;
+    let rev_path = revisions_path(&dir);
+    let line = serde_json::to_string(&record).map_err(|e| e.to_string())? + "\n";
+
+    let lock = crate::storage::acquire_sidecar_lock(&rev_path)?;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&rev_path)
+        .map_err(|e| e.to_string())?;
+    // B4-style separator: crash-truncated file missing trailing newline.
+    if rev_path.exists() {
+        if let Ok(meta) = fs::metadata(&rev_path) {
+            if meta.len() > 0 {
+                if let Ok(mut check) = fs::File::open(&rev_path) {
+                    if check.seek(SeekFrom::End(-1)).is_ok() {
+                        let mut last = [0u8; 1];
+                        if check.read_exact(&mut last).is_ok() && last[0] != b'\n' {
+                            file.write_all(b"\n").map_err(|e| e.to_string())?;
+                            log::warn!("revisions.ndjson missing trailing newline (crash-truncated?), inserted separator");
+                        }
+                    }
+                }
+            }
+        }
+    }
+    file.write_all(line.as_bytes()).map_err(|e| e.to_string())?;
+    if let Err(e) = file.sync_all() {
+        log::warn!("fsync failed for revisions.ndjson (data may be at risk): {}", e);
+    }
+    if let Err(e) = lock.unlock() {
+        log::warn!("Failed to unlock revisions.ndjson append lock: {}", e);
+    }
+
+    // Metadata: refresh the last-message preview only when the edited row is
+    // (was) the newest one — otherwise leave updated_at/preview untouched.
+    refresh_last_preview_in_dir(dir, conv_id, message_id, new_content);
+
+    Ok(record)
+}
+
+/// Loads all valid revision records (append order). Corrupt lines are skipped
+/// with a warning — same resilience contract as message loading.
+pub fn load_revisions(app: &AppHandle, conv_id: &str) -> Result<Vec<EditRecord>, String> {
+    let dir = get_conversation_dir(app, conv_id)?;
+    load_revisions_from_dir(&dir)
+}
+
+pub fn load_revisions_from_dir(conv_dir: &Path) -> Result<Vec<EditRecord>, String> {
+    let rev_path = revisions_path(conv_dir);
+    if !rev_path.exists() {
+        return Ok(vec![]);
+    }
+    let file = fs::File::open(&rev_path).map_err(|e| e.to_string())?;
+    let reader = BufReader::new(file);
+    let mut records = Vec::new();
+    for (n, line) in reader.lines().enumerate() {
+        let line = match line {
+            Ok(l) => l,
+            Err(e) => {
+                log::warn!("Unreadable revision line {} in {}: {}", n, rev_path.display(), e);
+                continue;
+            }
+        };
+        if line.trim().is_empty() {
+            continue;
+        }
+        match parse_edit_record_line(&line) {
+            Ok(r) => records.push(r),
+            Err(e) => log::warn!(
+                "Skipping corrupted revision line {} in {}: {}",
+                n, rev_path.display(), e
+            ),
+        }
+    }
+    Ok(records)
+}
+
+/// Folds revisions into `messages` in place. Pure and unit-tested.
+///
+/// - Later revisions win (active version = last in append order).
+/// - `token_count` is re-estimated for edited content.
+/// - `incomplete` is cleared once the user took ownership of the text via an
+///   explicit edit; `edited` reflects that an active revision exists.
+/// - Stale revisions (truncated/regenerated turn ids) simply never match.
+pub fn apply_revisions(messages: &mut Vec<ChatMessage>, revisions: &[EditRecord]) {
+    if revisions.is_empty() {
+        return;
+    }
+    use std::collections::HashMap;
+    let mut idx: HashMap<String, usize> = HashMap::with_capacity(messages.len());
+    for (i, m) in messages.iter().enumerate() {
+        idx.insert(m.id.clone(), i);
+    }
+    for r in revisions {
+        if let Some(slot) = idx.get(r.message_id.as_str()).copied() {
+            let m = &mut messages[slot];
+            m.content = r.new_content.clone();
+            m.token_count = estimate_tokens(&m.content);
+            m.incomplete = false;
+            m.edited = true;
+        }
+    }
+}
+
+/// Read the last non-empty JSON line of messages.ndjson (cheap tail read used
+/// to decide whether an edit should refresh the conversation preview).
+fn last_message_json_line(msg_path: &Path) -> Option<String> {
+    let file = fs::File::open(msg_path).ok()?;
+    let reader = BufReader::new(file);
+    let mut last = None;
+    for line in reader.lines() {
+        match line {
+            Ok(l) if !l.trim().is_empty() => last = Some(l),
+            _ => {}
+        }
+    }
+    last
+}
+
+fn refresh_last_preview_in_dir(
+    conv_dir: &Path,
+    conv_id: &str,
+    message_id: &str,
+    new_content: &str,
+) {
+    let dir = conv_dir;
+    let msg_path = messages_path(&dir);
+    let is_last = last_message_json_line(&msg_path)
+        .and_then(|j| serde_json::from_str::<ChatMessage>(&j).ok())
+        .map(|m| m.id == message_id)
+        .unwrap_or(false);
+    if !is_last {
+        return;
+    }
+
+    let meta_path = metadata_path(&dir);
+    let meta_lock = match crate::storage::acquire_sidecar_lock(&meta_path) {
+        Ok(l) => l,
+        Err(e) => {
+            log::warn!("Preview refresh skipped (metadata lock): {}", e);
+            return;
+        }
+    };
+    let mut meta = match load_metadata_from_dir(dir) {
+        Ok(Some(m)) => m,
+        _ => {
+            let _ = meta_lock.unlock();
+            return;
+        }
+    };
+    meta.last_message_preview = Some(preview_from_message(&ChatMessage {
+        id: message_id.to_string(),
+        conversation_id: conv_id.to_string(),
+        speaker_id: String::new(),
+        speaker_name: String::new(),
+        content: new_content.to_string(),
+        timestamp: meta.last_message_timestamp.unwrap_or(current_timestamp()),
+        role: String::new(),
+        images: vec![],
+        token_count: 0,
+        incomplete: false,
+        edited: true,
+    }));
+    meta.updated_at = current_timestamp();
+    match serde_json::to_string_pretty(&meta) {
+        Ok(j) => {
+            if let Err(e) = atomic_write_bytes(&meta_path, j.as_bytes()) {
+                log::warn!("Preview refresh write failed: {}", e);
+            }
+        }
+        Err(e) => log::warn!("Preview refresh serialize failed: {}", e),
+    }
+    if let Err(e) = meta_lock.unlock() {
+        log::warn!("Failed to unlock metadata after preview refresh: {}", e);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -923,6 +1261,7 @@ mod tests {
             images: vec![],
             token_count: 0, // will be estimated
         incomplete: false,
+        edited: false,
         };
         let msg2 = ChatMessage {
             id: "m2".into(),
@@ -935,6 +1274,7 @@ mod tests {
             images: vec![],
             token_count: 0,
         incomplete: false,
+        edited: false,
         };
 
         let mut f = std::fs::OpenOptions::new().append(true).open(&msg_path).unwrap();
@@ -1050,6 +1390,7 @@ mod tests {
                 images: vec![],
                 token_count: 0,
         incomplete: false,
+        edited: false,
             };
             writeln!(file, "{}", serde_json::to_string(&msg).unwrap()).unwrap();
         }
@@ -1079,6 +1420,7 @@ mod tests {
                 images: vec![],
                 token_count: 1,
             incomplete: false,
+            edited: false,
             },
             ChatMessage {
                 id: "a1".into(),
@@ -1091,6 +1433,7 @@ mod tests {
                 images: vec![],
                 token_count: 1,
             incomplete: false,
+            edited: false,
             },
             ChatMessage {
                 id: "u2".into(),
@@ -1103,6 +1446,7 @@ mod tests {
                 images: vec![],
                 token_count: 1,
             incomplete: false,
+            edited: false,
             },
             ChatMessage {
                 id: "a2".into(),
@@ -1115,6 +1459,7 @@ mod tests {
                 images: vec![],
                 token_count: 1,
             incomplete: false,
+            edited: false,
             },
         ];
         let kept = truncate_after_last_user(&msgs);
@@ -1136,6 +1481,7 @@ mod tests {
                 images: vec![],
                 token_count: 20,
                 incomplete: false,
+                edited: false,
             })
             .collect();
         let taken = take_messages_within_token_budget(&msgs, 50);

@@ -493,6 +493,11 @@ impl LlamaServerManager {
 
         let child_pid = child.id().unwrap_or(0);
 
+        // Memory telemetry must watch the model server, not the app shell.
+        // (Audit P1-2: sampling std::process::id() meant the preemptive Arena
+        // Reset could never observe the process that actually grows.)
+        crate::memory_monitor::set_monitored_pid(child_pid);
+
         // Phase 0: PID file for orphan detection
         if let Err(e) = write_pid_file(child_pid, port) {
             log::warn!("Failed to write PID file for port {}: {}", port, e);
@@ -610,6 +615,9 @@ impl LlamaServerManager {
         if let Some(port) = self.current_port {
             cleanup_stale_pid_file(port);
         }
+
+        // No server process left to watch: fall back to self-monitoring.
+        crate::memory_monitor::set_monitored_pid(0);
 
         self.current_port = None;
         self.current_api_key = None;

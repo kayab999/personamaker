@@ -27,11 +27,13 @@
 | 7 | Worker kill mid-reply: toast, no corrupt ndjson, next send works | |
 | 8 | Arena reset (300 req or 45m): recovery without data loss | |
 | 9 | Fresh install & startup: `dpkg -i` the shipped `.deb`, launch from menu, window opens, default personas load, first conversation sends | |
+| 10 | **Frontend↔backend wiring live**: devtools console shows no `Not running inside Tauri — command ignored` warnings on boot | |
+| 11 | **Chat history loads**: opening an existing contact renders prior messages (not an empty thread) | |
 
 ## Known limitations (document in release notes)
 
-- Token streaming frozen (non-stream only) — post-RC
-- Message edit deferred
+- Message-edit **UI** hidden (backend revisions landed; UI pending)
+- No character-card (CCv2/V3) import/export; no lorebook/World Info
 - Voice / TTS experimental
 - AR / social layer out of scope
 

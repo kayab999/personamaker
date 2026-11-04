@@ -2,6 +2,75 @@
 
 All notable changes to LocalPersona are documented in this file.
 
+## [Unreleased] — Phase 0 + Phase 1 audit fixes (2026-11-04)
+
+### Fixed — release blockers
+- **`app.withGlobalTauri` was never set.** Tauri therefore never injected
+  `window.__TAURI__`, `isTauri()` returned false, and *every* `callTauri()` in
+  the frontend was a silent no-op: the packaged app could not load characters or
+  chat. The flag is now set in `tauri.conf.json` and asserted by
+  `tests/ipc_contract.rs` plus a dedicated CI job.
+- **`load_messages_for_display` was never registered** in `generate_handler!`
+  even though the frontend calls it at three sites — the chat view could never
+  load messages. It is now registered, and the `#[allow(dead_code)]` that hid
+  the compiler warning is gone. `tests/ipc_contract.rs` enforces parity in both
+  directions (every frontend call is registered; every `#[command]` is
+  registered).
+
+### Fixed — correctness
+- **PDF extraction pipe deadlock.** The worker's stdout was piped but never
+  drained, so any extraction larger than the OS pipe buffer (~64 KiB) blocked
+  the child until the 30 s timeout and was misreported as a "hostile file".
+  Both pipes are now drained concurrently on dedicated threads
+  (`drain_capped`); oversize output is rejected as a bound violation, not a
+  timeout. Regression suite: `tests/pdf_pipe_regression.rs`.
+- **Memory monitor watched the wrong process.** It sampled
+  `std::process::id()` (the app shell) instead of the `llama-server` child, so
+  the preemptive Arena Reset it exists to provide could never fire for the
+  process that actually consumes gigabytes. The monitor now follows the server
+  PID and resets its slope baseline when the target changes.
+- **`validate_localhost_endpoint` prefix-match bypass.** `http://localhost:1234@evil.com`
+  passed a `starts_with` check while a URL parser reads `evil.com` as the host.
+  The check now parses scheme/host/port strictly, rejects userinfo, and
+  requires an exact loopback host plus a numeric port.
+- **Production `expect()` panics removed** from the stream finalizer, the
+  NDJSON append path, and app start. `scripts/count_unwraps.py` now counts
+  `.expect(` as well, so the "0 production unwrap()" gate can no longer report
+  green while panic-on-error calls remain.
+- **`has_knowledge_base` was sticky** and there was no way to remove or reindex
+  a document — a failed ingest could only be fixed by deleting the character.
+  Added `list_character_documents`, `delete_character_document` and
+  `reindex_character_knowledge`; the flag is now recomputed from what is
+  actually indexed on disk.
+- `circuit_breaker.rs` no longer claims SHA-256 hashing (it uses
+  `DefaultHasher`; documented as an in-process dedup token only).
+
+### Added
+- `tests/ipc_contract.rs` (5 tests): frontend↔backend command parity, Tauri
+  global-API flag, bundled-frontend presence, and a guard against
+  `#[allow(dead_code)]` in `commands.rs`.
+- `tests/pdf_pipe_regression.rs` (2 tests): 256 KiB extraction completes;
+  40 MiB extraction fails fast with a bounds error instead of hanging.
+- Tribunal step `[4/4]` + CI job `IPC Contract`; verdict now requires it.
+
+### Removed
+- Outdated docs: `docs/handbook/CONTEXT_DUMP.txt` (2026-07 status dump),
+  `docs/handbook/SUNRISE_REVIEW.md`, `docs/handbook/OVERNIGHT_RESULTS.md`, and
+  `docs/LocalPersona 0 9 0 rc.md` (superseded audit plan).
+- `scripts/mock_hits.jsonl` is no longer tracked (runtime mock log; now
+  gitignored).
+- `frontend/generated/ipc-contract.json` removed: it was a stale (May 2026)
+  duplicate of `gen/schemas/localpersona-ipc-schemas.json`, missing
+  `StreamEvent` and `EditRecord`, and no code read it. The golden file in
+  `gen/schemas/` is the single contract snapshot enforced by
+  `tests/destructive_tests.rs::test_ipc_schema_has_no_drift`.
+
+### Notes
+- Full suite green: 62 lib tests + 11 integration binaries; frontend smoke 6/6;
+  `./scripts/tribunal.sh` green; `scripts/count_unwraps.py` = 0.
+- Docs refreshed (README, ROADMAP, AGENTS criteria table, ARCHITECTURE status,
+  HANDOVER) to stop under-claiming streaming and to record the audit.
+
 ## [Unreleased] — Phase A + B1 (2026-10-30)
 
 ### Added

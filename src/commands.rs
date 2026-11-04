@@ -161,14 +161,43 @@ pub enum StreamOutcome {
 /// Returns the validated URL or an error if it points to a non-local host.
 /// Accepts: http://127.0.0.1:*, http://localhost:*, http://[::1]:*
 fn validate_localhost_endpoint(api_base: &str) -> Result<(), String> {
-    let is_localhost = api_base.starts_with("http://127.0.0.1:")
-        || api_base.starts_with("http://localhost:")
-        || api_base.starts_with("http://[::1]:");
-    if !is_localhost {
-        return Err(format!(
-            "Inference endpoint must be on localhost (127.0.0.1, localhost, or [::1]) for security. Got: {}",
+    // Audit P1-6: the previous check was a bare `starts_with`, so
+    // `http://localhost:1234@evil.com` passed — the URL parser reads
+    // `localhost:1234` as userinfo and `evil.com` as the host. Parse the
+    // authority properly: no userinfo, exact host, explicit numeric port.
+    let invalid = || {
+        format!(
+            "Inference endpoint must be on localhost (127.0.0.1, localhost, or [::1]) with an explicit port, for security. Got: {}",
             api_base
-        ));
+        )
+    };
+
+    let rest = api_base.strip_prefix("http://").ok_or_else(invalid)?;
+    let authority = rest
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default();
+
+    // Userinfo smuggling (`user:pass@host`) is never legitimate here.
+    if authority.is_empty() || authority.contains('@') {
+        return Err(invalid());
+    }
+
+    let (host, port): (String, &str) = if let Some(rest) = authority.strip_prefix('[') {
+        // IPv6 literal: `[::1]:8080`
+        let (inside, after) = rest.split_once(']').ok_or_else(invalid)?;
+        let port = after.strip_prefix(':').ok_or_else(invalid)?;
+        (format!("[{}]", inside), port)
+    } else {
+        let (host, port) = authority.rsplit_once(':').ok_or_else(invalid)?;
+        (host.to_string(), port)
+    };
+
+    let host_ok = matches!(host.as_str(), "127.0.0.1" | "localhost" | "[::1]");
+    let port_ok = !port.is_empty() && port.chars().all(|c| c.is_ascii_digit());
+
+    if !host_ok || !port_ok {
+        return Err(invalid());
     }
     Ok(())
 }
@@ -1065,6 +1094,7 @@ fn build_assistant_msg(
         images: vec![],
         token_count: 0, // estimated in append_message
         incomplete,
+        edited: false,
     }
 }
 
@@ -1192,6 +1222,7 @@ async fn prepare_send_pipeline(
         }).collect(),
         token_count: 0, // will be estimated in append_message
         incomplete: false,
+        edited: false,
     };
 
     Ok(PreparedSend {
@@ -1588,7 +1619,12 @@ fn finalize_stream_persistence(
     if !persist {
         return Ok((None, false));
     }
-    let c = content.expect("non-empty content implied by persistence decision");
+    // Fail closed instead of panicking: the decision above already guarantees
+    // content is present, but a panic in the streaming finalizer would lose a
+    // user's reply. (Audit P1-7: production `expect()` removal.)
+    let Some(c) = content else {
+        return Ok((None, false));
+    };
     let assistant_msg = build_assistant_msg(meta, c.to_string(), incomplete);
     let assistant_id = assistant_msg.id.clone();
     crate::conversation::append_messages(
@@ -1737,7 +1773,8 @@ pub async fn stream_message_with_images(
     });
 
     drop(cancel);
-    drop(state); // release the command-level State guard
+    // `state` is a `tauri::State` borrow (not a lock guard): the async Mutex
+    // guard was already released when its scope ended. No explicit drop needed.
 
     Ok(serde_json::json!({ "requestId": request_id }))
 }
@@ -1908,13 +1945,6 @@ fn sanitize_filename(name: &str) -> String {
 
 // ==================== CONVERSATION COMMANDS (Phase 2 - Multi-Persona) ====================
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
-#[allow(dead_code)]
-fn current_timestamp() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64
-}
-
 // ==================== HIGH-PERFORMANCE CONVERSATION COMMANDS ====================
 // These use the new append-only ndjson design for O(1) message writes.
 
@@ -2017,7 +2047,6 @@ pub async fn load_all_messages(
 /// Uses the same token-budget logic that protects inference, so the frontend
 /// no longer has to pull the entire NDJSON just to render the chat.
 /// Returns messages in chronological order + a `has_more` flag.
-#[allow(dead_code)] // Called from frontend via Tauri; Rust doesn't see the call statically
 #[command]
 pub async fn load_messages_for_display(
     app: tauri::AppHandle,
@@ -2041,6 +2070,49 @@ pub async fn load_messages_for_display(
         "budget_used": budget,
         "total_messages": total,
     }))
+}
+
+// ==================== Phase B2: message edits as non-destructive revisions ====================
+
+/// Edit a message WITHOUT touching messages.ndjson: appends one EditRecord to
+/// the conversation's revisions.ndjson and returns `{revisionId, editedAt}`.
+/// The display/inference history sees the folded (edited) content; the raw
+/// row and the full revision chain remain on disk.
+#[command]
+pub async fn edit_message(
+    app: tauri::AppHandle,
+    conversation_id: String,
+    message_id: String,
+    new_content: String,
+) -> Result<serde_json::Value, String> {
+    let record = crate::conversation::append_edit_record(
+        &app,
+        &conversation_id,
+        &message_id,
+        &new_content,
+    )?;
+    Ok(serde_json::json!({
+        "revisionId": record.revision_id,
+        "messageId": record.message_id,
+        "editedAt": record.edited_at,
+        "previousRevisionId": record.previous_revision_id,
+    }))
+}
+
+/// Revision provenance for one message, oldest first (original row + line of
+/// supersession available via previous_revision_id). Read-only surface for
+/// the inspectable-edit UX and Tribunal tests.
+#[command]
+pub async fn get_message_revisions(
+    app: tauri::AppHandle,
+    conversation_id: String,
+    message_id: String,
+) -> Result<Vec<crate::conversation::EditRecord>, String> {
+    let all = crate::conversation::load_revisions(&app, &conversation_id)?;
+    Ok(all
+        .into_iter()
+        .filter(|r| r.message_id == message_id)
+        .collect())
 }
 
 #[command]
@@ -2190,6 +2262,7 @@ pub async fn regenerate_last_message(
         images: vec![],
         token_count: 0,
         incomplete: false,
+        edited: false,
     };
 
     if mid_thread {
@@ -2594,6 +2667,37 @@ pub async fn save_character_document(
     storage::save_character_document(&app, &character_id, &filename, &data)
 }
 
+/// Lists a character's knowledge documents and their index state.
+/// (Audit P1-4: the knowledge base used to be write-only.)
+#[command]
+pub async fn list_character_documents(
+    app: tauri::AppHandle,
+    character_id: String,
+) -> Result<Vec<storage::KnowledgeDocument>, String> {
+    storage::list_character_documents(&app, &character_id)
+}
+
+/// Deletes a knowledge document (and its chunk index), then recomputes
+/// `has_knowledge_base` from what actually remains on disk.
+#[command]
+pub async fn delete_character_document(
+    app: tauri::AppHandle,
+    character_id: String,
+    file_name: String,
+) -> Result<(), String> {
+    storage::delete_character_document(&app, &character_id, &file_name)
+}
+
+/// Re-chunks and re-embeds every document in the knowledge base.
+/// Returns the total chunk count produced.
+#[command]
+pub async fn reindex_character_knowledge(
+    app: tauri::AppHandle,
+    character_id: String,
+) -> Result<usize, String> {
+    storage::reindex_character_knowledge(&app, &character_id)
+}
+
 /// Generates speech audio for the given text using a TTS backend.
 /// Expects an OpenAI-compatible /v1/audio/speech endpoint (common when running
 /// a second llama-server with audio support or a dedicated TTS server for the Qwen3-TTS model).
@@ -2744,24 +2848,19 @@ pub async fn get_circuit_breaker_status() -> Result<crate::circuit_breaker::Circ
 
 #[command]
 pub async fn get_memory_telemetry() -> Result<serde_json::Value, String> {
-    // Read current memory directly using sysinfo (cross-platform)
-    let (rss_kb, vms_kb) = {
-        use sysinfo::{Pid, System, ProcessesToUpdate};
-        let mut sys = System::new();
-        sys.refresh_processes(ProcessesToUpdate::Some(&[Pid::from_u32(std::process::id())]), false);
-        if let Some(process) = sys.process(Pid::from_u32(std::process::id())) {
-            (process.memory() / 1024, process.virtual_memory() / 1024)
-        } else {
-            (0, 0)
-        }
-    };
+    // Report the process the monitor is actually watching — normally the
+    // llama-server child, not the app shell (audit P1-2). Falls back to the
+    // app PID when no server is running.
+    let pid = crate::memory_monitor::monitored_pid();
+    let (rss_kb, vms_kb) = crate::memory_monitor::process_memory_kb(pid);
 
     Ok(serde_json::json!({
         "rss_kb": rss_kb,
         "vms_kb": vms_kb,
         "rss_mb": rss_kb / 1024,
         "vms_mb": vms_kb / 1024,
-        "pid": std::process::id(),
+        "pid": pid,
+        "app_pid": std::process::id(),
     }))
 }
 
@@ -2909,9 +3008,24 @@ pub fn get_ipc_contract() -> serde_json::Value {
                     "role": {"type": "string", "enum": ["user", "assistant", "narrator"]},
                     "images": {"type": "array", "items": {"$ref": "#/definitions/ImageReference"}},
                     "token_count": {"type": "integer", "default": 0},
-                    "incomplete": {"type": "boolean", "default": false, "description": "True only for persisted partial stream turns (Phase B1 ABORTED/FAILED lifecycle). Never set on complete turns."}
+                    "incomplete": {"type": "boolean", "default": false, "description": "True only for persisted partial stream turns (Phase B1 ABORTED/FAILED lifecycle). Never set on complete turns."},
+                    "edited": {"type": "boolean", "default": false, "description": "True on revision-folded views (Phase B2): displayed content is the active revision of a user edit. Raw NDJSON rows never carry it."}
                 },
                 "required": ["id", "conversation_id", "speaker_id", "speaker_name", "content", "timestamp", "role"]
+            },
+            "EditRecord": {
+                "type": "object",
+                "description": "One stored revision of a message (Phase B2). Revisions live in conversations/{id}/revisions.ndjson, append-only; the active version of a message is its LAST record's new_content in append order.",
+                "properties": {
+                    "schema_version": {"type": "integer", "default": 1},
+                    "revision_id": {"type": "string"},
+                    "message_id": {"type": "string", "description": "Target row id in messages.ndjson"},
+                    "old_content": {"type": "string", "description": "Content this revision replaced (captured at edit time)"},
+                    "new_content": {"type": "string", "description": "Full replacement - the active content after folding"},
+                    "edited_at": {"type": "integer", "description": "Epoch millis"},
+                    "previous_revision_id": {"type": ["string", "null"], "description": "Supersession chain"}
+                },
+                "required": ["revision_id", "message_id", "old_content", "new_content", "edited_at"]
             },
             "StreamEvent": {
                 "type": "object",
@@ -3111,6 +3225,7 @@ mod sampling_and_history_tests {
             images: vec![],
             token_count: 0,
         incomplete: false,
+        edited: false,
         };
         let v = format_history_message_for_llm(&msg);
         assert_eq!(v["role"], "assistant");
@@ -3146,6 +3261,7 @@ mod sampling_and_history_tests {
                 images: vec![],
                 token_count: 0,
         incomplete: false,
+        edited: false,
             },
             crate::conversation::ChatMessage {
                 id: "2".into(),
@@ -3158,6 +3274,7 @@ mod sampling_and_history_tests {
                 images: vec![],
                 token_count: 0,
         incomplete: false,
+        edited: false,
             },
         ];
         let q = build_rag_query("What about the reactor?", &history);
@@ -3362,6 +3479,7 @@ mod streaming_tests {
                 images: vec![],
                 token_count: 3,
                 incomplete: false,
+                edited: false,
             },
             now: 42,
         };
@@ -3414,5 +3532,60 @@ mod sweep_w2_security_tests {
             "127.0.0.1"
         );
         assert_eq!(endpoint_host_header("not a url"), "127.0.0.1");
+    }
+
+    #[test]
+    fn localhost_validation_accepts_real_loopback_endpoints() {
+        for ok in [
+            "http://127.0.0.1:8080",
+            "http://localhost:8080",
+            "http://[::1]:8080",
+            "http://127.0.0.1:8080/v1",
+            "http://localhost:1234/v1/chat/completions",
+        ] {
+            assert!(
+                validate_localhost_endpoint(ok).is_ok(),
+                "should accept loopback endpoint: {ok}"
+            );
+        }
+    }
+
+    #[test]
+    fn localhost_validation_rejects_userinfo_smuggling() {
+        // The 0.9.0-rc.1 bypass: a URL parser reads `localhost:1234` as
+        // userinfo and `evil.com` as the host, but `starts_with` saw loopback.
+        for bad in [
+            "http://localhost:1234@evil.com",
+            "http://127.0.0.1:1234@evil.com",
+            "http://user:pass@localhost:1234",
+            "http://[::1]:1234@evil.com",
+        ] {
+            assert!(
+                validate_localhost_endpoint(bad).is_err(),
+                "must reject userinfo smuggling: {bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn localhost_validation_rejects_lookalike_hosts() {
+        for bad in [
+            "http://localhost.evil.com:8080",
+            "http://127.0.0.1.evil.com:8080",
+            "http://notlocalhost:8080",
+            "http://localhost:8080.evil.com",
+            "http://localhost:",
+            "http://localhost",
+            "https://localhost:8080",
+            "http://localhost:abc",
+            "http://0.0.0.0:8080",
+            "ftp://localhost:8080",
+            "localhost:8080",
+        ] {
+            assert!(
+                validate_localhost_endpoint(bad).is_err(),
+                "must reject non-loopback endpoint: {bad}"
+            );
+        }
     }
 }

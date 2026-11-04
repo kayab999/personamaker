@@ -45,7 +45,7 @@ async fn main() {
     // Phase 12.0: Install structured crash dump hook
     autopsy::install_panic_hook();
 
-    tauri::Builder::default()
+    let run_result = tauri::Builder::default()
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .menu(|handle| {
@@ -248,13 +248,25 @@ async fn main() {
             commands::list_orphan_conversation_hints,
             commands::get_conversation_metadata,
             commands::load_messages_paginated,
+            // P0: the bounded UI loader. Invoked from script.js
+            // (loadConversationMessages / updateContextUsagePill). Its absence
+            // here made every chat view render empty; guarded now by
+            // tests/ipc_contract.rs so it cannot silently regress.
+            commands::load_messages_for_display,
             commands::load_all_messages,
             commands::append_message_to_conversation,
             commands::delete_conversation_cmd,
             commands::repair_conversation_cmd,
+            // Phase B2: message edits (non-destructive revisions)
+            commands::edit_message,
+            commands::get_message_revisions,
             // Voice / TTS (experimental)
             commands::save_voice_sample,
             commands::save_character_document,
+            // Audit P1-4: knowledge base is no longer write-only
+            commands::list_character_documents,
+            commands::delete_character_document,
+            commands::reindex_character_knowledge,
             commands::generate_speech,
             // Voice / TTS server management
             commands::start_voice_server,
@@ -287,6 +299,12 @@ async fn main() {
             // WS5 Professional Observability
             commands::get_diagnostics_snapshot,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running LocalPersona");
+        .run(tauri::generate_context!());
+
+    // Audit P1-7: no production `expect()`. A failed event-loop start is a
+    // clean fatal exit with a legible message, not a panic backtrace.
+    if let Err(e) = run_result {
+        eprintln!("[LocalPersona] Fatal: failed to start the application: {e}");
+        std::process::exit(1);
+    }
 }

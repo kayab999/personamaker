@@ -32,19 +32,21 @@ Packaging
 • Linux .deb ~14MB in dist/0.9.0-rc.1/; package via scripts/package-release.sh.
 • Brand icons in icons/; master in docs/branding/.
 
-Governance: ./scripts/tribunal.sh (check + destructive + property) + CI Tribunal v12 (13 jobs incl. audit/deny/sbom/coverage/frontend) required on main.
+Governance: ./scripts/tribunal.sh (check + destructive + property + IPC contract) + CI Tribunal v12.1 (14 jobs incl. audit/deny/sbom/coverage/frontend/ipc-contract) required on main.
 
 Status: closed-beta RC. No numeric maturity scores by policy — readiness is
 measured, not asserted (see table below). Human soak/matrix still open.
-Landed post-RC: streaming (Phase B1, 2026-10-30). Still frozen: message edit
-(Phase B2 next), AR vision.
+Landed post-RC: streaming (Phase B1, 2026-10-30), message revisions backend
+(Phase B2), audit Phase 0+1 fixes (2026-11-04). Still hidden: message-edit UI.
+Not implemented: character-card interop, lorebook/World Info, group chat.
 
-| Criterion (2026-10-30) | State |
+| Criterion (2026-11-04) | State |
 |---|---|
-| Tribunal CI verdict | GREEN (all jobs incl. coverage floor 30%, audit, deny) — local Tribunal green at Phase A+B1 checkpoint; CI re-verify on next push |
-| Test matrix | 131 test functions (Rust, incl. 22 streaming + 12 fuzz rot guards) + 6 frontend smoke tests; 0 failing locally; bounded fuzz: gguf 213k runs / no crash |
-| Production unwrap() | 0 (ratchet-gated) |
-| Open audit findings | High: 0 · Med: E2E-browser deferred · Low: tracked in sweep docs |
+| Tribunal CI verdict | GREEN locally (14 jobs incl. coverage floor 30%, audit, deny, ipc-contract); CI re-verify on next push |
+| Test matrix | 147 Rust test fns (incl. 22 streaming, 16 revisions, 12 fuzz rot guards, 5 IPC contract, 2 PDF pipe) + 6 frontend smoke tests; 0 failing locally |
+| Release-blocker gate | `tests/ipc_contract.rs` asserts frontend↔backend command parity AND `app.withGlobalTauri=true` |
+| Production unwrap()/expect() | 0 (ratchet counts both forms) |
+| Open audit findings | High: 0 · Med: no desktop E2E job · Low: tracked in sweep docs |
 | Known unmitigated vulns | 3 accepted-risk ignores in audit.toml (no upstream fix) |
 | Human soak / acceptance matrix | OPEN |
 | Fuzz corpus | Seeded (gguf/ndjson/pdf) + rot-guard suite; runbook fuzz/README.md |

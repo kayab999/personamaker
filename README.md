@@ -32,23 +32,23 @@ Offline by design: chat, characters, and conversations never leave your machine.
 
 ## Current Status (2026)
 
-LocalPersona is on an **RC-stable track** after a ground-truth re-audit (2026-07). Reliability infrastructure is strong; product Q&A identity and settings contracts were fixed in the RC workplan (Phases R0–R3).
+LocalPersona is on an **RC-stable track** after a ground-truth re-audit (2026-07) and a full technical audit (2026-11).
 
 **Current strengths:**
 - Strong file-based persistence with atomic writes, exclusive `fs2` locking, and append-only NDJSON conversations
 - Correct **conversation UUID + character_id** inference contract (rich editor fields drive the model)
 - Professional server lifecycle with explicit `ServerState` machine and clean shutdown handling
 - Dual-policy **Arena Reset** (300 requests + 45-minute uptime) on both LLM and Voice servers
-- Active **Tribunal** gate: `cargo check` + destructive tests + property tests via `scripts/tribunal.sh`
+- **Real token streaming** with cancellation, idle detection and partial-response preservation
+- Active **Tribunal** gate: `cargo check` + destructive + property + IPC-contract tests via `scripts/tribunal.sh`
 - GGUF metadata parsing, token-budget context loading, diagnostics panel
 - Sampling settings (temperature / max_tokens / top_p) wired into inference
-- Non-stream responses are the RC-stable default (token streaming deferred post-RC)
 
 **Version:** `0.9.0-rc.1`  
 **Installable:** Linux `.deb` (~14 MB) under `dist/0.9.0-rc.1/` — no models included.  
-**RC maturity:** ~8.7–9.0; closed beta after human soak; not GA.
+**RC maturity:** measured by the criteria table in [AGENTS.md](AGENTS.md) — no numeric scores by policy; closed beta after human soak; not GA.
 
-**Known RC limitations:** message edit deferred; streaming UI frozen off; voice/TTS experimental; AR/social out of scope; `.deb` is the ship vehicle (AppImage dropped from default targets — see packaging docs).
+**Known RC limitations:** message-edit **UI** still hidden (backend landed); no character-card (CCv2/V3) import/export yet; no lorebook/World Info; voice/TTS experimental; AR/social out of scope; `.deb` is the ship vehicle (AppImage dropped from default targets — see packaging docs).
 
 **Release notes:** [RELEASE_NOTES](docs/handbook/RELEASE_NOTES_0.9.0-rc.1.md) · [CHANGELOG](CHANGELOG.md) · [RC checklist](docs/handbook/RC_ACCEPTANCE_CHECKLIST.md) · [Blueprint](docs/handbook/ARCHITECTURE_AND_STATUS.md)
 
@@ -81,7 +81,7 @@ See [docs/packaging/PACKAGING.md](docs/packaging/PACKAGING.md) and [docs/packagi
 ### Current focus
 
 - Human RC acceptance matrix + soak ([checklist](docs/handbook/RC_ACCEPTANCE_CHECKLIST.md))
-- Post-RC: real streaming, message edit
+- Post-RC: message-edit UI, character-card (CCv2/V3) interop, knowledge-base management
 
 See [ARCHITECTURE_AND_STATUS.md](docs/handbook/ARCHITECTURE_AND_STATUS.md) and [AGENTS.md](AGENTS.md).
 

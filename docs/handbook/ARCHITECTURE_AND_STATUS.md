@@ -4,7 +4,7 @@
 |-------|-------|
 | **Document type** | Canonical architecture + living project status |
 | **Version covered** | `0.9.0-rc.1` |
-| **Last updated** | 2026-07-25 |
+| **Last updated** | 2026-11-04 (post-audit Phase 0 + Phase 1) |
 | **Audience** | Maintainers, AI agents, closed-beta partners |
 | **Supersedes for “what is true now”** | Partial claims in older audits; use this file as the **start-here** technical dump |
 
@@ -28,14 +28,21 @@
 |--------------|-----|
 | Bundled GGUF models | Size + licensing; BYO models |
 | Bundled llama-server | Platform/GPU matrix; BYO binary |
-| Live token streaming UI | Frozen for stability (post-RC) |
-| Message edit / branch | Deferred |
+| Message-edit UI | Backend landed (Phase B2 revisions); UI still hidden |
+| Character-card interop (CCv2/V3) | Not implemented; own JSON format only |
+| Lorebook / World Info | Not implemented (semantic RAG only) |
 | AR / social / geolocation | Vision only (`FUTURE_VISION.md`) |
 | Production AppImage on this host | `linuxdeploy` failed; **`.deb` ships** |
 
 ---
 
-## 2. Current status snapshot (2026-07-25)
+## 2. Current status snapshot (2026-11-04)
+
+> 2026-11 audit: two release blockers were found and fixed — `app.withGlobalTauri`
+> was never set (so `window.__TAURI__` never existed and every frontend IPC call
+> was a no-op) and `load_messages_for_display` was never registered (so chat
+> could not load). Both are now covered by `tests/ipc_contract.rs` and a
+> dedicated CI job. See `CHANGELOG.md` for the full Phase 0/1 list.
 
 ### 2.1 Release posture
 
@@ -44,7 +51,7 @@
 | Version | `0.9.0-rc.1` |
 | Identifier | `com.localpersona.studio` |
 | License | MIT (`LICENSE`) |
-| Tribunal | `cargo check` + destructive (21) + property (18) |
+| Tribunal | `cargo check` + destructive + property + **IPC contract** |
 | Installable package | **Yes** — `dist/0.9.0-rc.1/LocalPersona_0.9.0-rc.1_amd64.deb` (~14 MB) |
 | Standalone binary | `dist/0.9.0-rc.1/localpersona-linux-x86_64` (~34 MB) |
 | AppDir portable | `LocalPersona_*_AppDir.tar.gz` (~94 MB) |
@@ -52,19 +59,12 @@
 | Models in package | **None** (correct) |
 | Manual soak / 8-scenario matrix | Still **human-owned** (`RC_ACCEPTANCE_CHECKLIST.md`) |
 
-### 2.2 Maturity (honest scores)
+### 2.2 Readiness (measured, not asserted)
 
-| Domain | Score | Notes |
-|--------|------:|-------|
-| Architecture / sovereignty | 8.5–9 | File SoT, dual servers, atomic IO |
-| Reliability | 8–8.5 | Arena, health, Tribunal; soak unproven |
-| Q&A / persona fidelity | ~8 | Identity + compose + sampling fixed |
-| UX polish | 7–7.5 | Messenger direction; single JS file |
-| Packaging / commercial | ~8 | Deb + docs; AppImage gap |
-| Release engineering | 7–7.5 | Scripts + dist; git history thin in some workspaces |
-| **Overall RC readiness** | **~8.7–9.0** | Closed beta after human matrix |
-
-Earlier “9.2–9.3” scores over-weighted infrastructure and under-weighted product contract bugs (since fixed).
+Numeric maturity scores are intentionally **not** used (project policy: readiness
+is measured, not claimed). The authoritative criteria table lives in
+[`AGENTS.md`](../../AGENTS.md#quick-context-for-pasting-into-new-conversations);
+verify each row against the code before quoting it.
 
 ### 2.3 Major workstreams completed
 
@@ -76,6 +76,10 @@ Earlier “9.2–9.3” scores over-weighted infrastructure and under-weighted p
 | R0 identity | `character_id` + conversation UUID; never `"user"` as character file |
 | R1–R3 product | Sampling wired, stream freeze, context pill, edit hidden |
 | Architecture freeze A–C | NDJSON-only interactive chat; shared inference helpers; diagnostics |
+| Phase B1 (2026-10-30) | Real token streaming: unified pipeline, explicit lifecycle, cancellable, partial preserved |
+| Phase B2 backend (2026-11) | Non-destructive message revisions (`revisions.ndjson` + fold); UI still hidden |
+| Audit Phase 0 (2026-11-04) | Fixed `withGlobalTauri` + unregistered `load_messages_for_display`; IPC contract gate |
+| Audit Phase 1 (2026-11-04) | PDF pipe deadlock, memory-monitor PID, loopback URL parsing, `expect()` removal, knowledge delete/reindex |
 | Commercial packaging P0–P5 | No GGUF in bundle; deb kit; brand icons; LICENSE; packaging docs |
 
 ---
@@ -432,14 +436,15 @@ sendMessage → {
 
 ## 12. Known limitations (RC)
 
-1. Token streaming disabled (complete responses only).  
-2. Message editing not available.  
-3. Voice/TTS experimental.  
-4. AppImage may not build on paths with spaces / broken linuxdeploy — use **deb**.  
-5. Frontend is one large untyped JS file (contract risk mitigated by Tribunal + tests).  
-6. RAG cold-start can delay first knowledge query (embedding model init).  
-7. Human soak + full Q&A matrix still required before “stable beta declared.”  
-8. CDN Tailwind/fonts require network for full UI styling unless offline-cached by WebView.  
+1. Message-edit **UI** not available (backend revisions landed in Phase B2).  
+2. No character-card (CCv2/CCv3) import/export — own JSON format only.  
+3. No lorebook / World Info (semantic RAG only).  
+4. Voice/TTS experimental.  
+5. AppImage may not build on paths with spaces / broken linuxdeploy — use **deb**.  
+6. Frontend is one large untyped JS file (contract risk mitigated by Tribunal + `tests/ipc_contract.rs`).  
+7. RAG cold-start can delay first knowledge query (embedding model init).  
+8. Human soak + full Q&A matrix still required before “stable beta declared.”  
+9. Tailwind/lucide are vendored locally; no CDN required at runtime.
 
 ---
 
@@ -449,9 +454,10 @@ sendMessage → {
 |----------|--------|
 | P0 human | Install `dist/...deb`, run [RC_ACCEPTANCE_CHECKLIST](./RC_ACCEPTANCE_CHECKLIST.md) matrix |
 | P0 human | 2–4h soak; confirm no ghost llama-server after quit |
-| P1 | Restore full git remote/history if needed; tag `v0.9.0-rc.1` |
-| P2 post-RC | Real streaming with abort + Tribunal |
-| P2 post-RC | Message edit on NDJSON |
+| P1 | Character-card interop (CCv2/CCv3 + PNG + CHARX import, CCv3 export) |
+| P1 | Knowledge-base management UI (backend commands landed) |
+| P2 | Message-edit UI on the Phase B2 revision backend |
+| P2 | Author's note / injection depth; wider sampling surface |
 | P3 | AppImage on space-free path or fixed linuxdeploy |
 | Later | Optional bundled llama-server variants; AR vision |
 
@@ -484,7 +490,7 @@ sudo dpkg -i dist/0.9.0-rc.1/LocalPersona_0.9.0-rc.1_amd64.deb
 
 ## 15. One-paragraph summary
 
-LocalPersona `0.9.0-rc.1` is a Tauri 2 + Rust + vanilla JS desktop app that manages dual llama-server children, stores all creative state as user-owned files (append-only NDJSON conversations + character JSON + knowledge chunks), enforces a real identity/Q&A contract for persona fidelity, and ships a **~14 MB Debian package without models**. Reliability and packaging foundations are commercial-grade for closed beta; remaining risk is human validation, AppImage tooling, and post-RC product surfaces (streaming, edit), not missing core architecture.
+LocalPersona `0.9.0-rc.1` is a Tauri 2 + Rust + vanilla JS desktop app that manages dual llama-server children, stores all creative state as user-owned files (append-only NDJSON conversations + character JSON + knowledge chunks), enforces a real identity/Q&A contract for persona fidelity, and ships a **~14 MB Debian package without models**. Reliability and packaging foundations are commercial-grade for closed beta; remaining risk is human validation, AppImage tooling, and ecosystem surfaces (character-card interop, lorebooks, message-edit UI), not missing core architecture.
 
 ---
 

@@ -42,6 +42,10 @@ __pycache__/
 harness/mock_requests.jsonl
 harness/mock_state.json
 scripts/mock_state.json
+# The mock server writes mock_hits.jsonl into its cwd (see
+# scripts/mock_llama_server.py); it is a runtime log, not source.
+scripts/mock_hits.jsonl
+mock_hits.jsonl
 harness/captures.jsonl
 harness/soak.csv
 harness/fidelity_out/

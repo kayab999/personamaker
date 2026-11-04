@@ -42,6 +42,11 @@
         "conversation_id": {
           "type": "string"
         },
+        "edited": {
+          "default": false,
+          "description": "True on revision-folded views (Phase B2): displayed content is the active revision of a user edit. Raw NDJSON rows never carry it.",
+          "type": "boolean"
+        },
         "id": {
           "type": "string"
         },
@@ -137,6 +142,49 @@
         "created_at",
         "updated_at",
         "message_count"
+      ],
+      "type": "object"
+    },
+    "EditRecord": {
+      "description": "One stored revision of a message (Phase B2). Revisions live in conversations/{id}/revisions.ndjson, append-only; the active version of a message is its LAST record's new_content in append order.",
+      "properties": {
+        "edited_at": {
+          "description": "Epoch millis",
+          "type": "integer"
+        },
+        "message_id": {
+          "description": "Target row id in messages.ndjson",
+          "type": "string"
+        },
+        "new_content": {
+          "description": "Full replacement - the active content after folding",
+          "type": "string"
+        },
+        "old_content": {
+          "description": "Content this revision replaced (captured at edit time)",
+          "type": "string"
+        },
+        "previous_revision_id": {
+          "description": "Supersession chain",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "revision_id": {
+          "type": "string"
+        },
+        "schema_version": {
+          "default": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "revision_id",
+        "message_id",
+        "old_content",
+        "new_content",
+        "edited_at"
       ],
       "type": "object"
     },

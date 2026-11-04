@@ -52,6 +52,36 @@ pub struct MemoryMonitor {
     consecutive_high_slope: u32,
     history: VecDeque<MemorySnapshot>,
     max_history: usize,
+    /// PID currently being sampled. Changes when the llama-server child
+    /// starts/stops, so slope tracking is reset instead of computing a
+    /// meaningless delta across two unrelated processes.
+    target_pid: u32,
+}
+
+/// PID the monitor should watch. `0` means "the app process itself".
+///
+/// This is process-wide and lock-free on purpose: the sampler runs on a
+/// background task, while `LlamaServerManager::start/stop` sets the child PID.
+/// Before the 0.9.0-rc.1 audit this module always sampled
+/// `std::process::id()` — i.e. the Tauri app, which is small and stable —
+/// so the preemptive reset it exists to provide could never fire for the
+/// process that actually consumes gigabytes.
+static MONITORED_PID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Point the monitor at a process (the llama-server child). Pass `0` to
+/// return to self-monitoring.
+pub fn set_monitored_pid(pid: u32) {
+    MONITORED_PID.store(pid, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The PID currently being sampled (never `0`).
+pub fn monitored_pid() -> u32 {
+    let pid = MONITORED_PID.load(std::sync::atomic::Ordering::Relaxed);
+    if pid == 0 {
+        std::process::id()
+    } else {
+        pid
+    }
 }
 
 impl MemoryMonitor {
@@ -62,12 +92,28 @@ impl MemoryMonitor {
             consecutive_high_slope: 0,
             history: VecDeque::new(),
             max_history: 60,
+            target_pid: monitored_pid(),
         }
     }
 
     /// Takes a memory snapshot and returns it.
     pub fn sample(&mut self) -> MemorySnapshot {
-        let (rss_kb, vms_kb) = read_process_memory();
+        // The watched process can change (server started/stopped/restarted).
+        // RSS deltas across two different processes are meaningless, so drop
+        // the previous sample and restart slope tracking.
+        let pid = monitored_pid();
+        if pid != self.target_pid {
+            log::info!(
+                "Memory Monitor: target process changed {} -> {}; resetting slope baseline",
+                self.target_pid,
+                pid
+            );
+            self.target_pid = pid;
+            self.last_snapshot = None;
+            self.consecutive_high_slope = 0;
+        }
+
+        let (rss_kb, vms_kb) = process_memory_kb(pid);
         let timestamp = now_epoch_secs();
 
         let slope = if let Some(ref prev) = self.last_snapshot {
@@ -187,14 +233,17 @@ pub fn start_memory_monitor(
     monitor
 }
 
-/// Reads current process memory using the sysinfo crate for cross-platform support.
-/// Falls back to /proc/self/status on Linux, sysinfo on macOS/Windows.
-fn read_process_memory() -> (u64, u64) {
-    // Use sysinfo for cross-platform memory reading
-    use sysinfo::{Pid, System, ProcessesToUpdate};
+/// Reads memory for a specific PID using the sysinfo crate (cross-platform).
+///
+/// Callers pass the monitored PID — normally the `llama-server` child, not the
+/// app. Returns `(0, 0)` when the process has already exited, which the
+/// sampler treats as "no data" rather than as zero memory usage.
+pub fn process_memory_kb(pid: u32) -> (u64, u64) {
+    use sysinfo::{Pid, ProcessesToUpdate, System};
+    let target = Pid::from_u32(pid);
     let mut sys = System::new();
-    sys.refresh_processes(ProcessesToUpdate::Some(&[Pid::from_u32(std::process::id())]), false);
-    if let Some(process) = sys.process(Pid::from_u32(std::process::id())) {
+    sys.refresh_processes(ProcessesToUpdate::Some(&[target]), false);
+    if let Some(process) = sys.process(target) {
         let rss = process.memory() / 1024; // bytes → KB
         let vms = process.virtual_memory() / 1024;
         return (rss, vms);
@@ -213,9 +262,20 @@ fn now_epoch_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// `MONITORED_PID` is process-wide, so tests that retarget it must not run
+    /// concurrently with tests that depend on the default target.
+    static PID_LOCK: Mutex<()> = Mutex::new(());
+
+    fn lock() -> std::sync::MutexGuard<'static, ()> {
+        PID_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
 
     #[test]
     fn test_memory_monitor_slope_calculation() {
+        let _g = lock();
+        set_monitored_pid(0);
         let config = MemoryMonitorConfig {
             sample_interval_secs: 1,
             slope_threshold_kb_per_sec: 100.0,
@@ -234,6 +294,8 @@ mod tests {
 
     #[test]
     fn test_history_bounded() {
+        let _g = lock();
+        set_monitored_pid(0);
         let config = MemoryMonitorConfig {
             sample_interval_secs: 1,
             ..Default::default()
@@ -246,5 +308,51 @@ mod tests {
         }
 
         assert!(monitor.get_history(100).len() <= 5);
+    }
+
+    /// P1-2 regression: the monitor must follow the process it is pointed at,
+    /// and must not compute a slope across two different processes.
+    #[test]
+    fn retargeting_process_resets_slope_baseline() {
+        let _g = lock();
+
+        // Start on self.
+        set_monitored_pid(0);
+        let mut monitor = MemoryMonitor::new(MemoryMonitorConfig::default());
+        assert_eq!(monitor.target_pid, std::process::id());
+        let first = monitor.sample();
+        assert_eq!(first.slope_kb_per_sec, 0.0);
+
+        // Retarget to PID 1 (init) — guaranteed present on unix CI runners.
+        // Any Linux/macOS CI runner has it; on Windows the test is skipped by
+        // the assertion below.
+        if cfg!(unix) {
+            set_monitored_pid(1);
+            let after = monitor.sample();
+            assert_eq!(
+                monitor.target_pid, 1,
+                "monitor must follow set_monitored_pid"
+            );
+            assert_eq!(
+                after.slope_kb_per_sec, 0.0,
+                "first sample after a target change must not compute a slope \
+                 across two unrelated processes"
+            );
+        }
+
+        // Restore the default so later tests in this binary are unaffected.
+        set_monitored_pid(0);
+        assert_eq!(monitored_pid(), std::process::id());
+    }
+
+    /// `monitored_pid()` never returns the sentinel 0.
+    #[test]
+    fn monitored_pid_falls_back_to_self() {
+        let _g = lock();
+        set_monitored_pid(0);
+        assert_eq!(monitored_pid(), std::process::id());
+        set_monitored_pid(4242);
+        assert_eq!(monitored_pid(), 4242);
+        set_monitored_pid(0);
     }
 }

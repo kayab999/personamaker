@@ -1,4 +1,4 @@
-name: Forensic Tribunal — v12.0
+name: Forensic Tribunal — v12.1
 
 on:
   push:
@@ -203,17 +203,19 @@ jobs:
           fi
           echo "✅ No unsafe code found"
 
-      - name: Check for unwrap() in production code
+      - name: Check for unwrap()/expect() in production code
         run: |
           # Accurate ratchet via scripts/count_unwraps.py, which excludes
           # #[cfg(test)] modules and static Regex::new (the old grep counted
-          # 41 test-only unwraps as production). Baseline is now 0 — any new
-          # production unwrap() fails the gate; use explicit error returns.
+          # 41 test-only unwraps as production). Audit P1-7: the script now
+          # counts `.expect(` too — the previous gate reported "0 production
+          # unwrap()" while three expect() panics sat on hot paths.
+          # Baseline is 0 — any new panic-on-error call fails the gate.
           BASELINE=0
           COUNT=$(python3 scripts/count_unwraps.py --quiet)
-          echo "Found $COUNT unwrap() calls in production code (baseline $BASELINE)"
+          echo "Found $COUNT panic-on-error calls (.unwrap()/.expect()) in production code (baseline $BASELINE)"
           if [ "$COUNT" -gt "$BASELINE" ]; then
-            echo "⚠️ new production unwrap() — refactor to return errors"
+            echo "⚠️ new production unwrap()/expect() — refactor to return errors"
             python3 scripts/count_unwraps.py
             exit 1
           fi
@@ -406,16 +408,62 @@ jobs:
       - name: Run frontend smoke suite (XSS properties, zero deps)
         run: node --test "frontend/tests/*.test.js"
 
+  # ==================== IPC Contract (P0 regression gate) ====================
+  # 0.9.0-rc.1 shipped with a fully green Tribunal and an app that could not
+  # load a single character: `app.withGlobalTauri` was unset (Tauri never
+  # injects `window.__TAURI__`, so every callTauri was a no-op) and
+  # `load_messages_for_display` was missing from generate_handler!.
+  # These are static checks over checked-in files — no GUI, no display.
+  ipc-contract:
+    name: IPC Contract
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Tauri Linux dependencies (gtk/webkit for -sys crates)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Verify frontend <-> backend command parity
+        run: cargo test --test ipc_contract -- --nocapture
+
+      - name: Assert Tauri global API is enabled (tauri.conf.json)
+        run: |
+          python3 - <<'PY'
+          import json, sys
+          cfg = json.load(open("tauri.conf.json"))
+          if cfg.get("app", {}).get("withGlobalTauri") is not True:
+              print("::error::tauri.conf.json must set app.withGlobalTauri = true")
+              print("Without it Tauri never injects window.__TAURI__, and every")
+              print("callTauri() in the frontend is silently a no-op.")
+              sys.exit(1)
+          print("app.withGlobalTauri = true ✓")
+          PY
+
   # ==================== Tribunal Verdict ====================
   verdict:
     name: Tribunal Verdict
     runs-on: ubuntu-latest
-    needs: [build, test, proptest, autopsy, clippy, security, audit, deny, coverage, frontend, frontend-tests]
+    needs: [build, test, proptest, autopsy, clippy, security, audit, deny, coverage, frontend, frontend-tests, ipc-contract]
     steps:
       - name: All checks passed
         run: |
           echo "╔══════════════════════════════════════════╗"
-          echo "║      TRIBUNAL v12.0 — VERDICT: GREEN     ║"
+          echo "║      TRIBUNAL v12.1 — VERDICT: GREEN     ║"
           echo "╠══════════════════════════════════════════╣"
           echo "║ ✅ Build:        PASS                    ║"
           echo "║ ✅ Unit Tests:   PASS                    ║"
@@ -428,6 +476,7 @@ jobs:
           echo "║ ✅ Coverage:     PASS                    ║"
           echo "║ ✅ Frontend:     PASS                    ║"
           echo "║ ✅ FrontendTests:PASS                    ║"
+          echo "║ ✅ IPC Contract: PASS                    ║"
           echo "╠══════════════════════════════════════════╣"
           echo "║ Blast Radius: 0                          ║"
           echo "║ Sovereign Scaling: VERIFIED              ║"

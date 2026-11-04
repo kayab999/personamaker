@@ -29,12 +29,12 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-echo "🛡️  Ejecutando el Tribunal Implacable (v12.0)..."
-echo "    Scope: cargo check + destructive tests (Arena Reset, ndjson integrity, locks, ID validation, etc.)"
+echo "🛡️  Ejecutando el Tribunal Implacable (v12.1)..."
+echo "    Scope: cargo check + destructive + property + IPC contract (Arena Reset, ndjson integrity, locks, ID validation, etc.)"
 echo ""
 
 # 1. Compilation gate
-echo "→ [1/3] cargo check (compilation + type safety)..."
+echo "→ [1/4] cargo check (compilation + type safety)..."
 if ! cargo check 2>&1; then
     echo ""
     echo "❌ El Tribunal rechaza este commit."
@@ -46,7 +46,7 @@ echo "   ✓ cargo check limpio."
 
 # 2. Destructive / Invariant tests (the real Tribunal battery)
 echo ""
-echo "→ [2/3] Destructive tests (invariantes de integridad, Arena Reset, corrupción, concurrencia, identity)..."
+echo "→ [2/4] Destructive tests (invariantes de integridad, Arena Reset, corrupción, concurrencia, identity)..."
 if ! cargo test --test destructive_tests -- --quiet 2>&1; then
     echo ""
     echo "❌ El Tribunal rechaza este commit."
@@ -62,7 +62,7 @@ echo "   ✓ Destructive / invariant tests passed."
 
 # 3. Property tests (aligned with CI proptest job — R0)
 echo ""
-echo "→ [3/3] Property-based tests (ID validation, truncate, circuit breaker)..."
+echo "→ [3/4] Property-based tests (ID validation, truncate, circuit breaker)..."
 if ! cargo test --test property_tests -- --quiet 2>&1; then
     echo ""
     echo "❌ El Tribunal rechaza este commit."
@@ -72,9 +72,26 @@ if ! cargo test --test property_tests -- --quiet 2>&1; then
 fi
 echo "   ✓ Property tests passed."
 
+# 4. IPC contract (P0-1/P0-2 regression gate)
+# Catches the two failure modes that shipped in 0.9.0-rc.1 with a green
+# Tribunal: `app.withGlobalTauri` unset (inert frontend) and a frontend
+# command missing from generate_handler! (dead chat view).
+echo ""
+echo "→ [4/4] IPC contract (frontend <-> backend command parity, Tauri global API)..."
+if ! cargo test --test ipc_contract -- --quiet 2>&1; then
+    echo ""
+    echo "❌ El Tribunal rechaza este commit."
+    echo "   Razón: IPC contract violated."
+    echo "   Esto significa que la UI llama comandos no registrados, o que"
+    echo "   app.withGlobalTauri no está activo (frontend totalmente inerte)."
+    echo "   Ejecuta: cargo test --test ipc_contract -- --nocapture"
+    exit 1
+fi
+echo "   ✓ IPC contract verified (every callTauri is registered; global API on)."
+
 echo ""
 echo "✅ El Tribunal aprueba este commit. Blast Radius = 0 verificado."
-echo "   Gates: cargo check + destructive_tests + property_tests."
+echo "   Gates: cargo check + destructive_tests + property_tests + ipc_contract."
 echo "   Principios: #1 (nada silencioso), #5 (test precede solución),"
 echo "   #8 (Blast Radius control), #11 (mensajes no envenenan), #12 (Arena Reset)."
 echo ""

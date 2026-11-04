@@ -1,8 +1,16 @@
-//! Circuit Breaker — SHA-256 hash-based deduplication for agent iterations.
+//! Circuit Breaker — hash-based deduplication for agent iterations.
 //!
 //! Prevents the system from wasting resources on identical repeated failures.
 //! When a diff hash fails N times within a cooldown window, the circuit opens
 //! and blocks further attempts until the cooldown expires.
+//!
+//! Hashing note (audit P1-8): keys come from `DefaultHasher` (an unspecified
+//! standard-library hasher), **not** SHA-256 — an earlier version of this
+//! header claimed SHA-256. That is sufficient here because the key is a purely
+//! in-process dedup token: it is never persisted, never sent over the wire,
+//! and never used as an authentication or integrity primitive. Do not reuse it
+//! for anything security-relevant, and do not persist it across runs (the
+//! algorithm is not guaranteed stable between Rust releases).
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

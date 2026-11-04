@@ -819,20 +819,185 @@ pub fn process_character_document(
     }
 
     // Save chunks next to the original file
-    let chunks_path = full_path.with_extension(
-        full_path
-            .extension()
-            .map(|e| format!("{}.chunks.json", e.to_string_lossy()))
-            .unwrap_or_else(|| "chunks.json".to_string()),
-    );
+    let chunks_path = chunks_path_for(&full_path);
 
     let json = serde_json::to_string_pretty(&chunks).map_err(|e| e.to_string())?;
     atomic_write(&chunks_path, &json).map_err(|e| format!("Failed to write chunks file: {}", e))?;
 
     // Only mark usable after embeddings exist
-    mark_character_has_knowledge_base(app, character_id)?;
+    set_character_knowledge_flag(app, character_id, true)?;
 
     Ok(chunks.len())
+}
+
+/// Path of the derived chunk index for a knowledge document.
+/// `book.pdf` → `book.pdf.chunks.json` (same directory).
+fn chunks_path_for(full_path: &Path) -> PathBuf {
+    full_path.with_extension(
+        full_path
+            .extension()
+            .map(|e| format!("{}.chunks.json", e.to_string_lossy()))
+            .unwrap_or_else(|| "chunks.json".to_string()),
+    )
+}
+
+/// True for names the ingest pipeline can process (and false for the derived
+/// `*.chunks.json` sidecars, so they never show up as documents).
+fn is_knowledge_document_name(name: &str) -> bool {
+    if name.ends_with(".chunks.json") {
+        return false;
+    }
+    matches!(
+        Path::new(name).extension().and_then(|e| e.to_str()),
+        Some("pdf") | Some("txt") | Some("md") | Some("markdown")
+    )
+}
+
+fn read_chunks_for(full_path: &Path) -> Vec<KnowledgeChunk> {
+    std::fs::read_to_string(chunks_path_for(full_path))
+        .ok()
+        .and_then(|s| serde_json::from_str::<Vec<KnowledgeChunk>>(&s).ok())
+        .unwrap_or_default()
+}
+
+/// One knowledge document as presented to the UI (audit P1-4: previously the
+/// knowledge base was write-only — no way to see, remove, or reindex a file).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct KnowledgeDocument {
+    pub file_name: String,
+    pub size_bytes: u64,
+    pub chunk_count: usize,
+    pub embedded_chunk_count: usize,
+    /// True when at least one chunk carries an embedding, i.e. retrieval can
+    /// actually return something for this document.
+    pub indexed: bool,
+}
+
+/// Lists the documents in a character's knowledge base with their index state.
+pub fn list_character_documents(
+    app: &AppHandle,
+    character_id: &str,
+) -> Result<Vec<KnowledgeDocument>, String> {
+    validate_character_id(character_id)?;
+    let dir = ensure_character_knowledge_dir(app, character_id)?;
+
+    let mut out = Vec::new();
+    let entries = std::fs::read_dir(&dir)
+        .map_err(|e| format!("Failed to read knowledge directory: {}", e))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("Failed to read knowledge entry: {}", e))?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if !is_knowledge_document_name(name) {
+            continue;
+        }
+        let chunks = read_chunks_for(&path);
+        let chunk_count = chunks.len();
+        let embedded_chunk_count = chunks.iter().filter(|c| c.embedding.is_some()).count();
+        out.push(KnowledgeDocument {
+            file_name: name.to_string(),
+            size_bytes: entry.metadata().map(|m| m.len()).unwrap_or(0),
+            chunk_count,
+            embedded_chunk_count,
+            indexed: embedded_chunk_count > 0,
+        });
+    }
+    out.sort_by(|a, b| a.file_name.cmp(&b.file_name));
+    Ok(out)
+}
+
+/// Deletes a knowledge document and its derived chunk index.
+///
+/// This is the missing half of `save_character_document`: without it a failed
+/// ingest could only be corrected by deleting the whole character, and
+/// `has_knowledge_base` stayed `true` forever.
+pub fn delete_character_document(
+    app: &AppHandle,
+    character_id: &str,
+    file_name: &str,
+) -> Result<(), String> {
+    validate_character_id(character_id)?;
+    if file_name.is_empty()
+        || file_name.contains('/')
+        || file_name.contains('\\')
+        || file_name.contains("..")
+    {
+        return Err("Invalid document name".to_string());
+    }
+
+    let dir = ensure_character_knowledge_dir(app, character_id)?;
+    let doc_path = dir.join(file_name);
+    let chunks_path = chunks_path_for(&doc_path);
+
+    if !doc_path.exists() && !chunks_path.exists() {
+        return Err(format!("Document not found: {}", file_name));
+    }
+
+    if doc_path.exists() {
+        std::fs::remove_file(&doc_path)
+            .map_err(|e| format!("Failed to delete document: {}", e))?;
+    }
+    if chunks_path.exists() {
+        // A missing/failed index removal must not block deleting the document.
+        if let Err(e) = std::fs::remove_file(&chunks_path) {
+            log::warn!("Failed to delete chunk index for {}: {}", file_name, e);
+        }
+    }
+
+    refresh_character_knowledge_flag(app, character_id)?;
+    Ok(())
+}
+
+/// Re-processes every document in the knowledge base (re-chunk + re-embed).
+/// Returns the total chunk count across documents.
+pub fn reindex_character_knowledge(
+    app: &AppHandle,
+    character_id: &str,
+) -> Result<usize, String> {
+    validate_character_id(character_id)?;
+    let docs = list_character_documents(app, character_id)?;
+
+    let mut total = 0usize;
+    let mut failures: Vec<String> = Vec::new();
+    for doc in &docs {
+        let relative_path = format!(
+            "characters/{}/knowledge/{}",
+            character_id, doc.file_name
+        );
+        match process_character_document(app, character_id, &relative_path) {
+            Ok(n) => total += n,
+            Err(e) => failures.push(format!("{}: {}", doc.file_name, e)),
+        }
+    }
+
+    refresh_character_knowledge_flag(app, character_id)?;
+
+    if failures.is_empty() {
+        Ok(total)
+    } else {
+        Err(format!(
+            "Reindexed {} chunk(s); {} document(s) failed: {}",
+            total,
+            failures.len(),
+            failures.join("; ")
+        ))
+    }
+}
+
+/// Recomputes `has_knowledge_base` from what is actually on disk.
+fn refresh_character_knowledge_flag(
+    app: &AppHandle,
+    character_id: &str,
+) -> Result<(), String> {
+    let usable = list_character_documents(app, character_id)?
+        .iter()
+        .any(|d| d.indexed);
+    set_character_knowledge_flag(app, character_id, usable)
 }
 
 /// Sweep W1: PDF text extraction runs in a disposable child process, never in
@@ -847,6 +1012,53 @@ pub fn process_character_document(
 /// `pub` + doc(hidden) follows the read_pid_file_with_nonce precedent: needed
 /// by tests/pdf_isolation.rs, not part of the IPC surface.
 #[doc(hidden)]
+/// Reads a child pipe to EOF on a dedicated thread, keeping at most `cap`
+/// bytes but *always draining*.
+///
+/// This is the fix for the pipe deadlock that shipped in 0.9.0-rc.1: the
+/// parent polled `try_wait()` while never reading stdout, so any document whose
+/// extracted text exceeded the OS pipe buffer (~64 KiB on Linux) blocked the
+/// worker forever and was reported as "hostile file". Draining concurrently
+/// decouples worker progress from parent polling.
+fn drain_capped<R: std::io::Read + Send + 'static>(
+    mut reader: R,
+    cap: usize,
+) -> std::thread::JoinHandle<(Vec<u8>, bool)> {
+    std::thread::spawn(move || {
+        let mut kept: Vec<u8> = Vec::new();
+        let mut truncated = false;
+        let mut buf = [0u8; 16 * 1024];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    let room = cap.saturating_sub(kept.len());
+                    if n <= room {
+                        kept.extend_from_slice(&buf[..n]);
+                    } else {
+                        kept.extend_from_slice(&buf[..room]);
+                        truncated = true;
+                    }
+                }
+                // Broken pipe (parent gone) or transient error: stop draining.
+                Err(_) => break,
+            }
+        }
+        (kept, truncated)
+    })
+}
+
+fn join_capped(
+    handle: Option<std::thread::JoinHandle<(Vec<u8>, bool)>>,
+) -> (Vec<u8>, bool) {
+    match handle.map(|h| h.join()) {
+        Some(Ok(value)) => value,
+        // A panicking reader thread means we lost the pipe: report as truncated
+        // so callers fail closed rather than accepting partial text silently.
+        _ => (Vec::new(), true),
+    }
+}
+
 pub fn extract_text_from_pdf(path: &Path) -> Result<String, String> {
     // Cheap pre-checks before paying a process spawn.
     let meta = std::fs::metadata(path).map_err(|e| format!("Failed to read PDF file: {}", e))?;
@@ -874,8 +1086,16 @@ pub fn extract_text_from_pdf(path: &Path) -> Result<String, String> {
         .map_err(|e| format!("Failed to spawn PDF worker: {}", e))?;
 
     // Bounded wait: poll try_wait so a stack-overflow hang can't wedge us.
+    // Both pipes are drained concurrently on their own threads — without this,
+    // any extraction larger than the OS pipe buffer deadlocks the worker and
+    // every real document gets misreported as hostile.
     const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
     const OUTPUT_CAP: usize = 32 * 1024 * 1024;
+    const STDERR_CAP: usize = 8 * 1024;
+
+    let out_handle = child.stdout.take().map(|p| drain_capped(p, OUTPUT_CAP));
+    let err_handle = child.stderr.take().map(|p| drain_capped(p, STDERR_CAP));
+
     let start = std::time::Instant::now();
     let status = loop {
         match child.try_wait().map_err(|e| format!("PDF worker wait failed: {}", e))? {
@@ -884,21 +1104,28 @@ pub fn extract_text_from_pdf(path: &Path) -> Result<String, String> {
                 if start.elapsed() > TIMEOUT {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return Err("PDF parsing timed out (likely hostile file); document rejected safely".to_string());
+                    // Readers see EOF once the child is dead; join so no thread
+                    // outlives the call.
+                    let _ = join_capped(out_handle);
+                    let _ = join_capped(err_handle);
+                    return Err(format!(
+                        "PDF parsing timed out after {}s (hostile file or document too large); document rejected safely",
+                        TIMEOUT.as_secs()
+                    ));
                 }
                 std::thread::sleep(std::time::Duration::from_millis(25));
             }
         }
     };
 
-    let output = child
-        .wait_with_output()
-        .map_err(|e| format!("Failed to collect PDF worker output: {}", e))?;
-    if output.stdout.len() > OUTPUT_CAP {
+    let (stdout_bytes, stdout_truncated) = join_capped(out_handle);
+    let (stderr_bytes, _) = join_capped(err_handle);
+
+    if stdout_truncated || stdout_bytes.len() > OUTPUT_CAP {
         return Err("PDF extracted text exceeds sane bounds; document rejected safely".to_string());
     }
     if !status.success() {
-        let detail = String::from_utf8_lossy(&output.stderr);
+        let detail = String::from_utf8_lossy(&stderr_bytes);
         let detail = detail.trim().chars().take(300).collect::<String>();
         return Err(format!(
             "PDF worker rejected the document (exit {}): {}",
@@ -910,7 +1137,7 @@ pub fn extract_text_from_pdf(path: &Path) -> Result<String, String> {
             }
         ));
     }
-    let text = String::from_utf8_lossy(&output.stdout).into_owned();
+    let text = String::from_utf8_lossy(&stdout_bytes).into_owned();
     if text.trim().is_empty() {
         Err("PDF contains no extractable text (may be a scanned document or image-based PDF)".to_string())
     } else {
@@ -1074,7 +1301,11 @@ fn chunk_by_sentences(text: &str, source_file: &str, target_size: usize) -> Vec<
     chunks
 }
 
-fn mark_character_has_knowledge_base(app: &AppHandle, character_id: &str) -> Result<(), String> {
+fn set_character_knowledge_flag(
+    app: &AppHandle,
+    character_id: &str,
+    has_knowledge: bool,
+) -> Result<(), String> {
     validate_character_id(character_id)?;
     let characters_dir = ensure_characters_dir(app)?;
     let path = characters_dir.join(format!("{}.json", character_id));
@@ -1101,7 +1332,7 @@ fn mark_character_has_knowledge_base(app: &AppHandle, character_id: &str) -> Res
         }
     };
 
-    character.has_knowledge_base = true;
+    character.has_knowledge_base = has_knowledge;
 
     if let Ok(pretty) = serde_json::to_string_pretty(&character) {
         // Write under existing lock (use bytes path to avoid nested sidecar lock)
@@ -1251,5 +1482,59 @@ mod sweep_w2_sanitizer_tests {
             sanitize_avatar_color("#7c3aed\" onload=\"evil()"),
             "#7c3aed"
         );
+    }
+}
+
+#[cfg(test)]
+mod knowledge_management_tests {
+    use super::{chunks_path_for, is_knowledge_document_name};
+    use std::path::Path;
+
+    #[test]
+    fn chunk_index_path_is_derived_next_to_document() {
+        assert_eq!(
+            chunks_path_for(Path::new("/data/knowledge/book.pdf")),
+            Path::new("/data/knowledge/book.pdf.chunks.json")
+        );
+        assert_eq!(
+            chunks_path_for(Path::new("/data/knowledge/notes.md")),
+            Path::new("/data/knowledge/notes.md.chunks.json")
+        );
+    }
+
+    #[test]
+    fn chunk_sidecars_are_not_listed_as_documents() {
+        // Regression: `book.pdf.chunks.json` has extension `json`, but a naive
+        // "ends with .json" filter or a `starts_with` check would surface the
+        // derived index as an uploadable document.
+        assert!(!is_knowledge_document_name("book.pdf.chunks.json"));
+        assert!(!is_knowledge_document_name("notes.md.chunks.json"));
+    }
+
+    #[test]
+    fn supported_document_extensions_are_listed() {
+        for name in ["book.pdf", "notes.txt", "readme.md", "guide.markdown"] {
+            assert!(
+                is_knowledge_document_name(name),
+                "{name} should be treated as a knowledge document"
+            );
+        }
+    }
+
+    #[test]
+    fn unsupported_and_partial_names_are_rejected() {
+        for name in [
+            "image.png",
+            "archive.zip",
+            "chunks.json",
+            "no-extension",
+            "",
+            ".pdf",
+        ] {
+            assert!(
+                !is_knowledge_document_name(name),
+                "{name:?} must not be treated as a knowledge document"
+            );
+        }
     }
 }

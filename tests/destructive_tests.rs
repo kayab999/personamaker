@@ -909,7 +909,6 @@ async fn test_c6_redirect_not_followed() -> anyhow::Result<()> {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;
-    use std::time::Duration;
 
     // Server that always returns 302 to evil host
     let listener = TcpListener::bind("127.0.0.1:0")?;
@@ -944,7 +943,6 @@ async fn test_c6_redirect_not_followed() -> anyhow::Result<()> {
 #[test]
 fn test_gguf_array_skip_varied_widths() -> anyhow::Result<()> {
     use std::fs;
-    use std::io::Write;
     // Craft minimal GGUF with varied array element widths
     let temp = TempDir::new()?;
     let path = temp.path().join("test.gguf");

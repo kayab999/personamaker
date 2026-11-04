@@ -9,8 +9,8 @@
 | Field | Value |
 |---|---|
 | Version | `0.9.0-rc.1` (tag exists at `27be170` = HEAD of origin/main) |
-| Branch | `main`, clean, in sync with `origin/main` before mission start |
-| CI | Tribunal v12 GREEN (last CI run 2026-10-04; 13 jobs) |
+| Branch | `main`, uncommitted Phase 0/1 work + pre-existing Phase B2 backend work |
+| CI | Tribunal v12.1 — 14 jobs (adds `ipc-contract`); local Tribunal GREEN 2026-11-04 |
 | Soak / acceptance | OPEN — human-only (`docs/handbook/RC_ACCEPTANCE_CHECKLIST.md`) |
 
 ## Mission plan (2026-10-30 directive)
@@ -85,7 +85,7 @@ lib 53×2, command_layer 14, destructive 31, fuzz_corpus_seeds 12,
 ctx_budget 8, property 18, pdf_isolation 5, roster 2, stress 3); frontend
 smoke 6/6; bounded fuzz above.
 
-## Phase B2 — message editing (NEXT)
+## Phase B2 — message editing (backend DONE 2026-11; UI pending)
 
 Prefer non-destructive revisions over rewriting history — inspect
 `src/conversation.rs` `rewrite_conversation_messages` (~line 758) and
@@ -95,6 +95,58 @@ version, deterministic reconstruction, crash-safe recovery. Tests: first
 edit, multiple edits, regen-after-edit, interrupted write, ordering,
 restart. Frontend currently hides edit actions
 (`attachMessageActionListeners`).
+
+**Landed:** `revisions.ndjson` append + pure fold, `edit_message` /
+`get_message_revisions` commands registered, `ChatMessage.edited` flag,
+16 tests in `tests/revisions_tests.rs`. **Still open:** the UI wiring —
+`editMessage()` in `frontend/script.js` still shows "not available in this RC".
+
+## Audit Phase 0 — release blockers — DONE (2026-11-04)
+
+Found by a full technical audit, invisible to a green Tribunal because every
+job tested the Rust crate in isolation:
+
+1. **`app.withGlobalTauri` was never set** in `tauri.conf.json` (verified
+   absent from all git history; Tauri's default is `false`). Tauri therefore
+   never injected `window.__TAURI__`; `isTauri()` returned false and every
+   `callTauri()` was a silent no-op. Fixed + asserted in
+   `tests/ipc_contract.rs::global_tauri_api_is_enabled`.
+2. **`load_messages_for_display` was never registered** in `generate_handler!`
+   despite three frontend call sites — chat could never load. Fixed; the
+   `#[allow(dead_code)]` that masked the compiler warning is gone.
+
+Gates added: `tests/ipc_contract.rs` (5 tests: invoked⊆registered,
+declared⊆registered, withGlobalTauri, bundled frontend, no
+`allow(dead_code)` in commands.rs), Tribunal step `[4/4]`, CI job
+`IPC Contract`, verdict now requires it.
+
+## Audit Phase 1 — correctness — DONE (2026-11-04)
+
+- **PDF pipe deadlock**: stdout was piped but never drained, so any extraction
+  > ~64 KiB blocked the child until the 30 s timeout and was reported as a
+  "hostile file". Both pipes now drained on dedicated threads (`drain_capped`);
+  oversize output is a bounds error, not a timeout. Regression:
+  `tests/pdf_pipe_regression.rs` (256 KiB ok, 40 MiB fails fast).
+- **Memory monitor watched the app, not `llama-server`**: preemptive Arena
+  Reset could never fire for the process that grows. Now follows the server
+  PID and resets the slope baseline on target change.
+- **`validate_localhost_endpoint` bypass**: `http://localhost:1234@evil.com`
+  passed a `starts_with` check. Now strict scheme/host/port parsing, no
+  userinfo, exact loopback host, numeric port. 3 tests.
+- **Production `expect()` removed** (stream finalizer, ndjson append, app
+  start). `scripts/count_unwraps.py` now counts `.expect(` too.
+- **Knowledge base was write-only**: `has_knowledge_base` was sticky and there
+  was no delete/reindex. Added `list_character_documents`,
+  `delete_character_document`, `reindex_character_knowledge`; the flag is
+  recomputed from disk.
+- `circuit_breaker.rs` header no longer claims SHA-256 (uses `DefaultHasher`,
+  in-process dedup only).
+
+Verified: `./scripts/tribunal.sh` green; full `cargo test --all-targets` green
+(62 lib + 11 integration binaries); frontend smoke 6/6;
+`scripts/count_unwraps.py` = 0. App boot smoke under `xvfb-run`: starts,
+initializes data dirs, stays alive; the rebuilt binary now embeds the Tauri
+global-API script (`window.__TAURI__` present in strings).
 
 ## Rules for the next agent
 

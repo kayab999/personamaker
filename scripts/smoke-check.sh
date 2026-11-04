@@ -31,4 +31,4 @@ echo "  OK"
 echo
 echo "=== Smoke checks passed ==="
 echo "Human still required: cargo tauri dev → Settings, send, regen, server start."
-echo "See docs/handbook/SUNRISE_REVIEW.md if present."
+echo "See docs/handbook/RC_ACCEPTANCE_CHECKLIST.md for the full manual matrix."

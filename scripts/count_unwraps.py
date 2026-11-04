@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""Count .unwrap() calls in production (non-test) Rust code.
+"""Count panic-on-error calls (`.unwrap()` and `.expect(`) in production code.
 
 Replaces the naive `grep -v test_` filter, which miscounted 41 unwraps
 inside `#[cfg(test)] mod tests` blocks as production code (baseline 44
 was really 3: two fixed, one in a stale comment since removed).
+
+Audit P1-7: `.expect()` was previously not counted at all, so the gate could
+report "0 production unwrap()" while three `expect()` panics remained on hot
+paths (stream finalizer, ndjson append, app start). Both forms are now gated.
 
 Usage: scripts/count_unwraps.py [--quiet]
 Prints COUNT=<n> and exits 0. Excludes:
@@ -101,6 +105,7 @@ def count_file(path: pathlib.Path) -> int:
             # (matches the old gate's documented Regex::new exemption).
             continue
         total += code.count(".unwrap()")
+        total += code.count(".expect(")
     return total
 
 
